@@ -4,8 +4,7 @@ public struct ContentView: View {
 
     @StateObject private var pipeline: ConversionPipeline = {
         let stagingRoot = PreferencesStore.stagingDirectory
-        let uploader = CloudUploaderBridge(uploaderExecutableURL: PreferencesStore.cloudUploaderExecutableURL)
-        return ConversionPipeline(stagingDirectory: stagingRoot, uploader: uploader)
+        return ConversionPipeline(stagingDirectory: stagingRoot)
     }()
 
     public init() {}

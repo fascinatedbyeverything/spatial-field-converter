@@ -32,12 +32,12 @@ public final class ConversionPipeline: ObservableObject {
     @Published public var soundAnalysisEnabled: Bool = false   // v0.2 stub — has no effect in v0.1
 
     private let staging: URL
-    private let uploader: CloudUploaderBridge
+    private let uploader: R2Uploader
     private let converterVersion: String = "0.1.0"
 
-    public init(stagingDirectory: URL, uploader: CloudUploaderBridge) {
+    public init(stagingDirectory: URL) {
         self.staging = stagingDirectory
-        self.uploader = uploader
+        self.uploader = R2Uploader()
         try? FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
     }
 
@@ -92,12 +92,23 @@ public final class ConversionPipeline: ObservableObject {
             jobs[index].slug = conv.slug
             jobs[index].status = .uploading
 
-            let result = try await uploader.uploadADMBWF(
+            // Run adm_convert.py to split ADM BWF into bed.m4a + obj-NN.m4a + manifest.json
+            let stagingForSlug = staging
+                .appendingPathComponent("converted")
+                .appendingPathComponent(conv.slug)
+            let convertedFolder = try await ADMConverter.convert(
                 admBwfURL: conv.admBwfURL,
-                programmeName: snapshot.title,
-                category: "field-recording"
+                slug: conv.slug,
+                outputDirectory: stagingForSlug
             )
-            jobs[index].r2Key = result.r2Key
+
+            // Upload to R2 at stems/spatial-mix/field-recording/<slug>/
+            let r2Prefix = "stems/spatial-mix/field-recording/\(conv.slug)/"
+            let result = try await uploader.uploadFolder(
+                localFolder: convertedFolder,
+                r2Prefix: r2Prefix
+            )
+            jobs[index].r2Key = result.r2Prefix
             jobs[index].status = .done
         } catch {
             jobs[index].status = .failed

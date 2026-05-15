@@ -25,6 +25,7 @@ targets:
           - SpatialFieldConverter.entitlements
     resources:
       - path: Sources/Resources/Assets.xcassets
+      - path: Sources/Resources/adm_convert.py
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fascinatedbyeverything.spatialfieldconverter
