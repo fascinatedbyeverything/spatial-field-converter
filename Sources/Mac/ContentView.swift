@@ -1,14 +1,38 @@
 import SwiftUI
 
-struct ContentView: View {
-    var body: some View {
-        VStack {
-            Text("Spatial Field Converter v0.1")
-                .font(.title)
-            Text("Drop a Zoom H8 .wav or SD card folder")
-                .foregroundStyle(.secondary)
+public struct ContentView: View {
+
+    @StateObject private var pipeline: ConversionPipeline = {
+        let stagingRoot = PreferencesStore.stagingDirectory
+        let uploader = CloudUploaderBridge(uploaderExecutableURL: PreferencesStore.cloudUploaderExecutableURL)
+        return ConversionPipeline(stagingDirectory: stagingRoot, uploader: uploader)
+    }()
+
+    public init() {}
+
+    public var body: some View {
+        Group {
+            if pipeline.jobs.isEmpty {
+                DropTargetView { urls in
+                    pipeline.addFiles(urls)
+                }
+                .padding()
+            } else {
+                HStack(spacing: 0) {
+                    InspectorView(pipeline: pipeline)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider()
+                    VStack {
+                        DropTargetView { urls in
+                            pipeline.addFiles(urls)
+                        }
+                        .frame(width: 240, height: 240)
+                        .padding()
+                        Spacer()
+                    }
+                }
+            }
         }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 800, minHeight: 480)
     }
 }
