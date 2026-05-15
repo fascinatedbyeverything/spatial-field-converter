@@ -35,11 +35,11 @@ public enum PreferencesStore {
     private static func defaultUploaderPath() -> URL {
         // 1. Glob /Applications for "Cloud Uploader v{N}.app" — pick highest version.
         if let versioned = highestVersionedAppInApplications() {
-            return versioned.appendingPathComponent("Contents/MacOS/CloudUploader")
+            return versioned.appendingPathComponent("Contents/MacOS/Cloud Uploader")
         }
 
         // 2. Unversioned /Applications path
-        let appsPath = URL(fileURLWithPath: "/Applications/Cloud Uploader.app/Contents/MacOS/CloudUploader")
+        let appsPath = URL(fileURLWithPath: "/Applications/Cloud Uploader.app/Contents/MacOS/Cloud Uploader")
         if FileManager.default.fileExists(atPath: appsPath.path) {
             return appsPath
         }
@@ -50,7 +50,8 @@ public enum PreferencesStore {
         if let enumerator = FileManager.default.enumerator(at: derivedData, includingPropertiesForKeys: nil) {
             while let url = enumerator.nextObject() as? URL {
                 if url.lastPathComponent == "Cloud Uploader.app" && url.path.contains("Debug") {
-                    return url.appendingPathComponent("Contents/MacOS/CloudUploader")
+                    // Internal binary inside the .app is named "Cloud Uploader" (with space).
+                    return url.appendingPathComponent("Contents/MacOS/Cloud Uploader")
                 }
             }
         }
