@@ -101,6 +101,69 @@ final class WavFileReaderTests: XCTestCase {
         try data.write(to: url)
     }
 
+    // MARK: - Task 1.2b — BEXT date/time
+
+    func test_extractsBextDateAndTime() throws {
+        // EBU Tech 3285 BEXT layout (verified against the standard):
+        //   bytes   0-255: Description (ASCII)
+        //   bytes 256-287: Originator (ASCII)
+        //   bytes 288-319: OriginatorReference (ASCII)
+        //   bytes 320-329: OriginationDate "YYYY-MM-DD"
+        //   bytes 330-337: OriginationTime "HH:MM:SS"
+        //   bytes 338-...: TimeReferenceLow/High, Version, UMID, etc.
+        let url = tempDir.appendingPathComponent("with-bext-datetime.wav")
+        try writeWavWithBextDateTime(at: url, date: "2026-05-15", time: "10:00:00")
+
+        let reader = try WavFileReader(url: url)
+        XCTAssertEqual(reader.metadata.bextOriginationDate, "2026-05-15")
+        XCTAssertEqual(reader.metadata.bextOriginationTime, "10:00:00")
+    }
+
+    private func writeWavWithBextDateTime(at url: URL, date: String, time: String) throws {
+        XCTAssertEqual(date.count, 10, "date must be YYYY-MM-DD format")
+        XCTAssertEqual(time.count, 8, "time must be HH:MM:SS format")
+
+        let channels = 4
+        let sampleRate = 48000
+        let bitDepth = 24
+        let frameCount = 100
+        let bytesPerSample = bitDepth / 8
+        let dataSize = frameCount * channels * bytesPerSample
+        let byteRate = sampleRate * channels * bytesPerSample
+        let blockAlign = channels * bytesPerSample
+
+        // Minimum BEXT size is 602 bytes (per EBU Tech 3285 v1)
+        var bext = Data(count: 602)
+        // Fill date at offset 320-329
+        let dateBytes = date.data(using: .ascii)!
+        bext.replaceSubrange(320..<320 + dateBytes.count, with: dateBytes)
+        // Fill time at offset 330-337
+        let timeBytes = time.data(using: .ascii)!
+        bext.replaceSubrange(330..<330 + timeBytes.count, with: timeBytes)
+
+        let totalRiffSize = 36 + 8 + bext.count + 8 + dataSize
+
+        var data = Data()
+        data.append("RIFF".data(using: .ascii)!)
+        data.append(UInt32(totalRiffSize).littleEndianData)
+        data.append("WAVE".data(using: .ascii)!)
+        data.append("fmt ".data(using: .ascii)!)
+        data.append(UInt32(16).littleEndianData)
+        data.append(UInt16(1).littleEndianData)
+        data.append(UInt16(channels).littleEndianData)
+        data.append(UInt32(sampleRate).littleEndianData)
+        data.append(UInt32(byteRate).littleEndianData)
+        data.append(UInt16(blockAlign).littleEndianData)
+        data.append(UInt16(bitDepth).littleEndianData)
+        data.append("bext".data(using: .ascii)!)
+        data.append(UInt32(bext.count).littleEndianData)
+        data.append(bext)
+        data.append("data".data(using: .ascii)!)
+        data.append(UInt32(dataSize).littleEndianData)
+        data.append(Data(count: dataSize))
+        try data.write(to: url)
+    }
+
     // MARK: - Task 1.3
 
     func test_readsSamplesAsFloat_24bit() throws {
