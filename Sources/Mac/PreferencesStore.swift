@@ -8,16 +8,15 @@ public enum PreferencesStore {
             if let s = UserDefaults.standard.string(forKey: stagingDirKey), !s.isEmpty {
                 return URL(fileURLWithPath: s)
             }
-            // Default to the largest available external drive — never write big media to the
-            // internal SSD (locked rule). Order tried: 4TB T5, 1tb projects drive, then
-            // internal Caches as a last-resort fallback (with a warning logged).
+            // Default to the user's existing "field recordings" folder on the 4TB T5 drive —
+            // never write big media to the internal SSD (locked rule). Bounces live alongside
+            // source recordings on the same drive.
             let candidates: [String] = [
-                "/Volumes/new t5 4tb/spatial-field-converter-staging",
+                "/Volumes/new t5 4tb/field recordings",
                 "/Volumes/1tb /claude code projects /spatial-field-converter-staging"
             ]
             for path in candidates {
-                let parent = (path as NSString).deletingLastPathComponent
-                if FileManager.default.fileExists(atPath: parent) {
+                if FileManager.default.fileExists(atPath: path) {
                     return URL(fileURLWithPath: path)
                 }
             }
