@@ -103,8 +103,10 @@ public final class ConversionPipeline: ObservableObject {
                 outputDirectory: stagingForSlug
             )
 
-            // Upload to R2 at stems/spatial-mix/field-recording/<slug>/
-            let r2Prefix = "stems/spatial-mix/field-recording/\(conv.slug)/"
+            // Upload to R2 at stems/spatial-mix/field-recording/zoom-bounces/<slug>/
+            // The zoom-bounces sub-prefix groups Zoom H8 + VRH-8 conversions distinctly;
+            // future Ambeo / Zylia decoders will get their own sub-prefixes.
+            let r2Prefix = "stems/spatial-mix/field-recording/zoom-bounces/\(conv.slug)/"
             let result = try await uploader.uploadFolder(
                 localFolder: convertedFolder,
                 r2Prefix: r2Prefix
