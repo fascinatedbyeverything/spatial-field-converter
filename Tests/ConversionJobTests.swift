@@ -44,9 +44,9 @@ final class ConversionJobTests: XCTestCase {
         XCTAssertTrue(raw.contains("Test Field Recording".data(using: .ascii)!),
                       "programme name embedded in axml")
 
-        // Slug should be deterministic-ish (filename-derived)
-        XCTAssertTrue(result.slug.hasPrefix("field-recording-"),
-                      "slug should follow field-recording-* convention")
+        // Slug derived from sanitized title "Test Field Recording" → "test-field-recording"
+        XCTAssertTrue(result.slug.hasPrefix("test-field-recording-"),
+                      "slug should be derived from the user-editable title: \(result.slug)")
         XCTAssertGreaterThan(result.durationSeconds, 0.49)
         XCTAssertLessThan(result.durationSeconds, 0.51)
     }

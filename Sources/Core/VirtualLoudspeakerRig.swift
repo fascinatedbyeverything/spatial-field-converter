@@ -98,12 +98,25 @@ public struct VirtualLoudspeakerRig: Sendable {
             let dirX = cos(elRad) * cos(azRad)
             let dirY = cos(elRad) * sin(azRad)
             let dirZ = sin(elRad)
-            // Basic decoder: speaker_i = (W*wW + Y*wY*dirY + Z*wZ*dirZ + X*wX*dirX) / N
+            // Basic decoder: speaker_i = W*wW + Y*wY*dirY + Z*wZ*dirZ + X*wX*dirX
+            //
+            // The classic ambisonic decoder divides each speaker by N (number of speakers)
+            // for amplitude preservation under simultaneous playback through N physical
+            // speakers. That's correct for room speakers. It is WRONG for our pipeline,
+            // where each bed/object channel is auditioned (or re-rendered by Atmos
+            // Renderer) in isolation: dividing by 9 leaves quiet ambience ~19 dB below
+            // audibility while preserving loud transients. Removed.
+            //
+            // The max-rE spherical-harmonic weights (wW = sqrt(3/5), wXYZ = sqrt(1/5))
+            // already supply the correct relative normalization between W and the
+            // directional channels. A small overall safety gain (0.7) leaves headroom
+            // for the worst-case constructive direction (peak ≈ 1.22 unscaled).
+            let safety: Float = 0.7
             matrix.append([
-                wW / nonLFECount,
-                Float(wY * dirY) / nonLFECount,
-                Float(wZ * dirZ) / nonLFECount,
-                Float(wX * dirX) / nonLFECount
+                wW * safety,
+                Float(wY * dirY) * safety,
+                Float(wZ * dirZ) * safety,
+                Float(wX * dirX) * safety
             ])
         }
         return matrix

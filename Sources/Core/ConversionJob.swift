@@ -80,7 +80,7 @@ public final class ConversionJob: @unchecked Sendable {
         let recordedAt = Self.parseRecordedAt(metadata: metadata)
             ?? Self.fileModificationDate(of: sourceFile)
             ?? Date()
-        let slug = Self.makeSlug(for: sourceFile, recordedAt: recordedAt)
+        let slug = Self.makeSlug(for: sourceFile, title: programmeName, recordedAt: recordedAt)
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let outputURL = outputDirectory.appendingPathComponent("\(slug).wav")
 
@@ -130,12 +130,17 @@ public final class ConversionJob: @unchecked Sendable {
         ]
     }
 
-    /// Slug = `field-recording-YYYY-MM-DD-<6-char-hex>` deterministic for same input file.
-    static func makeSlug(for url: URL, recordedAt: Date) -> String {
+    /// Slug = `<sanitized-title>-YYYY-MM-DD-<6-char-hex>` deterministic for same input file + title.
+    /// The user's editable title in the inspector drives the slug; H8 default filenames
+    /// (e.g. "MIC1234") are still usable but get sanitized.
+    static func makeSlug(for url: URL, title: String, recordedAt: Date) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
         dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
         let dateStr = dateFormatter.string(from: recordedAt)
+
+        let titleSlug = Self.sanitizeForSlug(title)
+        let prefix = titleSlug.isEmpty ? "field-recording" : titleSlug
 
         // Simple hash: filename + recordedAt. Doesn't need to be cryptographic for v0.1.
         var h: UInt64 = 14695981039346656037   // FNV-1a offset basis
@@ -150,7 +155,33 @@ public final class ConversionJob: @unchecked Sendable {
         }
         let hex6 = String(format: "%06x", h & 0xFFFFFF)
 
-        return "field-recording-\(dateStr)-\(hex6)"
+        return "\(prefix)-\(dateStr)-\(hex6)"
+    }
+
+    /// Sanitize a user-typed title into a slug-safe ASCII prefix.
+    /// Rules: lowercase, replace whitespace with dash, strip non-alphanumeric/non-dash,
+    /// collapse multiple dashes, trim leading/trailing dashes, max 40 chars.
+    /// Returns "" if the input is empty after sanitization (caller falls back to a generic prefix).
+    static func sanitizeForSlug(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        var out = ""
+        var lastDash = true   // collapse leading dashes too
+        for ch in lower.unicodeScalars {
+            let isAlnum = (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")
+            if isAlnum {
+                out.unicodeScalars.append(ch)
+                lastDash = false
+            } else {
+                if !lastDash {
+                    out.append("-")
+                    lastDash = true
+                }
+            }
+            if out.count >= 40 { break }
+        }
+        // Trim trailing dash
+        while out.hasSuffix("-") { out.removeLast() }
+        return out
     }
 
     static func parseRecordedAt(metadata: WavMetadata) -> Date? {

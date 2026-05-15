@@ -50,7 +50,7 @@ public final class ConversionPipeline: ObservableObject {
 
             // Pre-check: have we already converted this file? If the ADM BWF already exists
             // in staging with the deterministic slug, mark as alreadyConverted.
-            if let slug = try? probableSlug(for: url) {
+            if let slug = try? probableSlug(for: url, title: title) {
                 let probable = staging.appendingPathComponent("\(slug).wav")
                 if FileManager.default.fileExists(atPath: probable.path) {
                     job.status = .alreadyConverted
@@ -119,14 +119,15 @@ public final class ConversionPipeline: ObservableObject {
         }
     }
 
-    /// Compute the probable slug for the source file. Uses the same logic as ConversionJob
-    /// but here it's "best effort" — only used to mark already-converted files.
-    private func probableSlug(for url: URL) throws -> String {
+    /// Compute the probable slug for the source file using the default (filename-derived)
+    /// title. Best-effort — if the user later edits the title before Convert+Upload, the
+    /// real slug will differ; this is used only for the "already converted" badge.
+    private func probableSlug(for url: URL, title: String) throws -> String {
         let reader = try WavFileReader(url: url)
         let recordedAt = ConversionJob.parseRecordedAt(metadata: reader.metadata)
             ?? ConversionJob.fileModificationDate(of: url)
             ?? Date()
-        return ConversionJob.makeSlug(for: url, recordedAt: recordedAt)
+        return ConversionJob.makeSlug(for: url, title: title, recordedAt: recordedAt)
     }
 
     /// Runs the convert phase only (ConversionJob + ADMConverter) without uploading.
@@ -144,7 +145,7 @@ public final class ConversionPipeline: ObservableObject {
         if let cached = snapshot.slug {
             slug = cached
         } else {
-            slug = try probableSlug(for: snapshot.sourceURL)
+            slug = try probableSlug(for: snapshot.sourceURL, title: snapshot.title)
         }
         let convertedFolder = staging
             .appendingPathComponent("converted")
