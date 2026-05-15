@@ -30,6 +30,7 @@ public final class ConversionPipeline: ObservableObject {
     @Published public var jobs: [Job] = []
     @Published public var isRunning: Bool = false
     @Published public var soundAnalysisEnabled: Bool = false   // v0.2 stub — has no effect in v0.1
+    @Published public var previewPlayer: PreviewPlayer = PreviewPlayer()
 
     private let staging: URL
     private let uploader: R2Uploader
@@ -124,5 +125,68 @@ public final class ConversionPipeline: ObservableObject {
             ?? ConversionJob.fileModificationDate(of: url)
             ?? Date()
         return ConversionJob.makeSlug(for: url, recordedAt: recordedAt)
+    }
+
+    /// Runs the convert phase only (ConversionJob + ADMConverter) without uploading.
+    /// Returns the URL of the resulting bed.m4a.
+    /// Caches: if bed.m4a already exists from a prior run, returns it immediately.
+    public func prepareForPreview(at index: Int) async throws -> URL {
+        guard jobs.indices.contains(index) else {
+            throw NSError(domain: "ConversionPipeline", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "invalid index"])
+        }
+        let snapshot = jobs[index]
+
+        // Determine the slug (use cached slug if available)
+        let slug: String
+        if let cached = snapshot.slug {
+            slug = cached
+        } else {
+            slug = try probableSlug(for: snapshot.sourceURL)
+        }
+        let convertedFolder = staging
+            .appendingPathComponent("converted")
+            .appendingPathComponent(slug)
+        let bedURL = convertedFolder.appendingPathComponent("bed.m4a")
+
+        // Cache hit: bed.m4a already exists from a prior convert run
+        if FileManager.default.fileExists(atPath: bedURL.path) {
+            jobs[index].slug = slug
+            return bedURL
+        }
+
+        // Cache miss: run the convert phase and restore status afterward (no upload)
+        let priorStatus = jobs[index].status
+        jobs[index].status = .converting
+
+        do {
+            let job = ConversionJob(
+                sourceFile: snapshot.sourceURL,
+                outputDirectory: staging,
+                mic: .vrh8AFormat,
+                programmeName: snapshot.title,
+                converterVersion: converterVersion
+            )
+            let conv = try await job.run()
+            jobs[index].slug = conv.slug
+
+            let actualSlugFolder = staging
+                .appendingPathComponent("converted")
+                .appendingPathComponent(conv.slug)
+            _ = try await ADMConverter.convert(
+                admBwfURL: conv.admBwfURL,
+                slug: conv.slug,
+                outputDirectory: actualSlugFolder
+            )
+
+            let actualBedURL = actualSlugFolder.appendingPathComponent("bed.m4a")
+            // Restore prior status — we didn't upload, so don't mark as done
+            jobs[index].status = priorStatus
+            return actualBedURL
+        } catch {
+            jobs[index].status = .failed
+            jobs[index].errorMessage = "preview convert failed: \(error)"
+            throw error
+        }
     }
 }

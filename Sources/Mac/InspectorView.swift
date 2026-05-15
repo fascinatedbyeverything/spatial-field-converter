@@ -2,17 +2,27 @@ import SwiftUI
 
 public struct InspectorView: View {
     @ObservedObject var pipeline: ConversionPipeline
+    /// Observed separately so SwiftUI re-renders when playback state changes.
+    @ObservedObject var previewPlayer: PreviewPlayer
 
     public init(pipeline: ConversionPipeline) {
         self.pipeline = pipeline
+        self.previewPlayer = pipeline.previewPlayer
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("\(pipeline.jobs.count) file\(pipeline.jobs.count == 1 ? "" : "s") queued")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(pipeline.jobs.count) file\(pipeline.jobs.count == 1 ? "" : "s") queued")
+                        .font(.headline)
+                    if previewPlayer.isPlaying {
+                        Text("▶ Previewing — make sure AirPods Max Spatial Audio is on (Control Center → Spatial Audio)")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
+                }
                 Spacer()
 
                 Toggle(isOn: $pipeline.soundAnalysisEnabled) {
@@ -54,6 +64,17 @@ public struct InspectorView: View {
                                 TextField("Title", text: $job.title)
                                     .textFieldStyle(.roundedBorder)
                                     .disabled(pipeline.isRunning)
+
+                                let isThisRowPlaying = previewPlayer.isPlaying &&
+                                    previewPlayer.currentFile?.path.contains(job.slug ?? "___nope___") == true
+                                Button(action: {
+                                    Task { await previewRow(job) }
+                                }) {
+                                    Image(systemName: isThisRowPlaying ? "stop.fill" : "play.fill")
+                                }
+                                .help(isThisRowPlaying ? "Stop preview" : "Preview spatial bed via AirPods")
+                                .disabled(pipeline.isRunning && !isThisRowPlaying)
+
                                 statusBadge(job.status)
                             }
                             Text(job.sourceURL.path)
@@ -81,6 +102,23 @@ public struct InspectorView: View {
                     .padding(.vertical, 4)
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func previewRow(_ job: ConversionPipeline.Job) async {
+        // If something is already playing, stop it.
+        if previewPlayer.isPlaying {
+            previewPlayer.stop()
+            return
+        }
+
+        guard let index = pipeline.jobs.firstIndex(where: { $0.id == job.id }) else { return }
+        do {
+            let bedURL = try await pipeline.prepareForPreview(at: index)
+            try previewPlayer.play(bedURL)
+        } catch {
+            // Error is already surfaced in the row's errorMessage via prepareForPreview.
         }
     }
 
