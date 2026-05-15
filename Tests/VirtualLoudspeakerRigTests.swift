@@ -58,4 +58,43 @@ final class VirtualLoudspeakerRigTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(lfe, 0, "LFE should be non-negative for W=1 input")
         XCTAssertLessThanOrEqual(lfe, 1.0, "LFE single-frame contribution should not exceed unit input")
     }
+
+    func test_lfeStream_lowPassesAt80Hz() {
+        let rig = VirtualLoudspeakerRig.atmos7_1_2()
+        let processor1 = rig.makeStreamingDecoder(sampleRate: 48000)
+
+        // 1 second of 1 kHz tone in W only
+        let frameCount = 48000
+        var input = [Float](repeating: 0, count: frameCount * 4)
+        for f in 0..<frameCount {
+            let t = Float(f) / 48000.0
+            input[f * 4 + 0] = sin(2 * .pi * 1000 * t) * 0.5
+        }
+        let output = processor1.process(interleavedBformat: input, frameCount: frameCount)
+        let speakerCount = 10
+
+        var lfeRms: Float = 0
+        for f in 0..<frameCount {
+            let s = output[f * speakerCount + 3]
+            lfeRms += s * s
+        }
+        lfeRms = sqrt(lfeRms / Float(frameCount))
+        XCTAssertLessThan(lfeRms, 0.01, "LFE should attenuate a 1kHz tone heavily")
+
+        // 50 Hz: should pass through with much higher energy
+        var input50 = [Float](repeating: 0, count: frameCount * 4)
+        for f in 0..<frameCount {
+            let t = Float(f) / 48000.0
+            input50[f * 4 + 0] = sin(2 * .pi * 50 * t) * 0.5
+        }
+        let processor2 = rig.makeStreamingDecoder(sampleRate: 48000)
+        let output50 = processor2.process(interleavedBformat: input50, frameCount: frameCount)
+        var lfeRms50: Float = 0
+        for f in 0..<frameCount {
+            let s = output50[f * speakerCount + 3]
+            lfeRms50 += s * s
+        }
+        lfeRms50 = sqrt(lfeRms50 / Float(frameCount))
+        XCTAssertGreaterThan(lfeRms50, lfeRms * 10, "50Hz should pass through LFE much more than 1kHz")
+    }
 }

@@ -109,3 +109,73 @@ public struct VirtualLoudspeakerRig: Sendable {
         return matrix
     }
 }
+
+public extension VirtualLoudspeakerRig {
+
+    /// Returns a stateful streaming decoder that applies a 2nd-order Butterworth low-pass
+    /// at 80 Hz to LFE channels (per ITU-R BS.775 conventions).
+    func makeStreamingDecoder(sampleRate: Int) -> StreamingDecoder {
+        return StreamingDecoder(rig: self, sampleRate: sampleRate)
+    }
+
+    /// Stateful B-format → loudspeaker decoder. Holds biquad state for LFE filtering across
+    /// calls to `process`. Not thread-safe.
+    final class StreamingDecoder {
+        private let rig: VirtualLoudspeakerRig
+        private let lfeFilter: BiquadLowpass
+        private let lfeGain: Float = 0.316  // -10 dB per BS.775
+
+        init(rig: VirtualLoudspeakerRig, sampleRate: Int) {
+            self.rig = rig
+            self.lfeFilter = BiquadLowpass(sampleRate: Float(sampleRate), cutoffHz: 80)
+        }
+
+        /// Decode and apply LFE low-pass. Returns interleaved 10-channel output.
+        public func process(interleavedBformat input: [Float], frameCount: Int) -> [Float] {
+            var output = rig.decode(interleavedBformat: input, frameCount: frameCount)
+            let speakerCount = rig.speakerPositions.count
+            for (i, pos) in rig.speakerPositions.enumerated() where pos.isLFE {
+                for f in 0..<frameCount {
+                    let w = input[f * 4 + 0]
+                    output[f * speakerCount + i] = lfeFilter.process(w) * lfeGain
+                }
+            }
+            return output
+        }
+    }
+}
+
+/// Direct-form-II transposed 2nd-order Butterworth low-pass biquad.
+/// Stateful — instantiate one per audio stream.
+final class BiquadLowpass {
+    private let b0: Float
+    private let b1: Float
+    private let b2: Float
+    private let a1: Float
+    private let a2: Float
+    private var z1: Float = 0
+    private var z2: Float = 0
+
+    init(sampleRate: Float, cutoffHz: Float) {
+        let omega = 2 * Float.pi * cutoffHz / sampleRate
+        let cosOmega = cos(omega)
+        let sinOmega = sin(omega)
+        let q: Float = 0.7071067811   // Butterworth Q
+        let alpha = sinOmega / (2 * q)
+
+        let a0 = 1 + alpha
+        b0 = ((1 - cosOmega) / 2) / a0
+        b1 = (1 - cosOmega) / a0
+        b2 = ((1 - cosOmega) / 2) / a0
+        a1 = (-2 * cosOmega) / a0
+        a2 = (1 - alpha) / a0
+    }
+
+    @inlinable
+    func process(_ x: Float) -> Float {
+        let y = b0 * x + z1
+        z1 = b1 * x - a1 * y + z2
+        z2 = b2 * x - a2 * y
+        return y
+    }
+}
