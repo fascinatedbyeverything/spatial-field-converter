@@ -1,11 +1,20 @@
 import Foundation
 
-public struct PCMBlock {
+/// A block of audio samples in interleaved float format.
+/// Layout: `[frame0_ch0, frame0_ch1, ..., frame0_chN, frame1_ch0, ...]`.
+/// Values are normalized to the closed interval `[-1.0, 1.0]`.
+public struct PCMBlock: Sendable {
     public let samples: [Float]
     public let frameCount: Int
     public let channelCount: Int
 }
 
+/// Streams interleaved PCM samples from a WAV file as `Float`.
+///
+/// Supports 16-, 24-, and 32-bit signed PCM. Reads sequentially from the data chunk;
+/// callers consume with `readNextBlock(maxFrames:)` until it returns `nil`.
+///
+/// Not thread-safe: the underlying `FileHandle` must be accessed from a single thread.
 public final class WavSampleReader {
     private let handle: FileHandle
     private let metadata: WavMetadata

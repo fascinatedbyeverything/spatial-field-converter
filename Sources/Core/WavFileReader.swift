@@ -22,6 +22,14 @@ public enum WavReadError: Error {
     case unsupportedFormat(UInt16)
 }
 
+/// Reads a WAV file's RIFF header, format chunk, optional BEXT chunk
+/// (Broadcast Wave Format, EBU Tech 3285), and optional iXML chunk.
+///
+/// Use the published `metadata` to inspect channel layout, sample rate, bit depth,
+/// frame count, and any BWF/iXML metadata. To read audio samples, construct a
+/// `WavSampleReader` from this reader.
+///
+/// Not thread-safe.
 public final class WavFileReader {
     public let url: URL
     public let metadata: WavMetadata
