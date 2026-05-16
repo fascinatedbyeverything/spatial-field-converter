@@ -38,7 +38,7 @@ public final class PreviewPlayer: ObservableObject {
             object: item,
             queue: .main
         ) { [weak self] _ in
-            self?.handleEnd()
+            Task { @MainActor in self?.handleEnd() }
         }
 
         // Observe rate so isPlaying stays accurate if playback stalls or system pauses.
