@@ -1,0 +1,59 @@
+name: SpatialFieldConverter
+options:
+  bundleIdPrefix: com.fascinatedbyeverything
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    GENERATE_INFOPLIST_FILE: YES
+
+targets:
+  SpatialFieldConverter:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Core
+      - path: Sources/Mac
+      - path: Sources/Resources
+        excludes:
+          - SpatialFieldConverter.entitlements
+    resources:
+      - path: Sources/Resources/Assets.xcassets
+      - path: Sources/Resources/adm_convert.py
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fascinatedbyeverything.spatialfieldconverter
+        INFOPLIST_KEY_LSUIElement: NO
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Fascinated By Everything"
+        INFOPLIST_KEY_CFBundleDisplayName: "Spatial Field Converter"
+        CODE_SIGN_ENTITLEMENTS: Sources/Resources/SpatialFieldConverter.entitlements
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+
+  SpatialFieldConverterTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: SpatialFieldConverter
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SpatialFieldConverter.app/Contents/MacOS/SpatialFieldConverter"
+
+schemes:
+  SpatialFieldConverter:
+    build:
+      targets:
+        SpatialFieldConverter: all
+        SpatialFieldConverterTests: [test]
+    test:
+      targets:
+        - SpatialFieldConverterTests
