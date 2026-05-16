@@ -115,11 +115,34 @@ public final class ConversionPipeline: ObservableObject {
                 r2Prefix: r2Prefix
             )
             jobs[index].r2Key = result.r2Prefix
+
+            // Refresh catalog.json on R2 so Fascinated Field + Presets3 can see
+            // the new spatial mix without a full catalog regeneration.
+            // Read duration from manifest.json written by ADMConverter.
+            let durationSec = manifestDuration(in: convertedFolder)
+            await uploader.refreshCatalog(
+                slug: conv.slug,
+                title: snapshot.title,
+                durationSec: durationSec
+            )
+
             jobs[index].status = .done
         } catch {
             jobs[index].status = .failed
             jobs[index].errorMessage = "\(error)"
         }
+    }
+
+    /// Read `duration` from the manifest.json that ADMConverter wrote into `folder`.
+    /// Returns 0 if the file is missing or unparseable — catalog refresh will still proceed.
+    private func manifestDuration(in folder: URL) -> Double {
+        let manifestURL = folder.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let duration = root["duration"] as? Double else {
+            return 0
+        }
+        return duration
     }
 
     /// True if `name` matches a generic field-recorder default (Mic1234, MIC0001, ZOOM0123, etc).
