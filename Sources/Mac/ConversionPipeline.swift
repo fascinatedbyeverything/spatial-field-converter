@@ -93,8 +93,13 @@ public final class ConversionPipeline: ObservableObject {
             let probeReader = try WavFileReader(url: snapshot.sourceURL)
             switch probeReader.metadata.channelCount {
             case 4:
-                mic = .vrh8AFormat
-                r2Category = "field-recording/zoom-bounces"
+                mic = PreferencesStore.defaultMicForFourChannel
+                switch mic {
+                case .ambeoAFormat:
+                    r2Category = "field-recording/ambeo-bounces"
+                default:
+                    r2Category = "field-recording/zoom-bounces"
+                }
             case 16:
                 mic = .ambixThirdOrder
                 r2Category = "field-recording/zylia-bounces"
@@ -170,15 +175,29 @@ public final class ConversionPipeline: ObservableObject {
         return duration
     }
 
-    /// True if `name` matches a generic field-recorder default (Mic1234, MIC0001, ZOOM0123, etc).
+    /// True if `name` matches a generic field-recorder default (Mic1234, MIC0001, ZOOM0123,
+    /// or Zylia's Recording_20200103_15_31_(ACN-SN3D-3) pattern).
     /// Used to blank the inspector title field so the user must enter something meaningful
     /// before Convert+Upload becomes enabled.
     static func isGenericRecorderName(_ name: String) -> Bool {
-        // Case-insensitive: letters followed by digits with no separators.
-        let regex = try? NSRegularExpression(pattern: #"^(mic|zoom|tr|track|file|rec)[_-]?\d+$"#,
-                                              options: [.caseInsensitive])
         let range = NSRange(name.startIndex..<name.endIndex, in: name)
-        return (regex?.firstMatch(in: name, range: range)) != nil
+
+        // Pattern 1: H8 / generic recorders — letters followed by digits.
+        let genericPattern = #"^(mic|zoom|tr|track|file|rec)[_-]?\d+$"#
+        if let re = try? NSRegularExpression(pattern: genericPattern, options: [.caseInsensitive]),
+           re.firstMatch(in: name, range: range) != nil {
+            return true
+        }
+
+        // Pattern 2: Zylia — Recording_<date8>[_]<time4-6>[_(<suffix>)]
+        // e.g. Recording_20200103_15_31_(ACN-SN3D-3) or Recording_20200103_153100
+        let zyliaPattern = #"^recording[_-]?\d{8}[_-]?\d{4,6}(_\(.+\))?$"#
+        if let re = try? NSRegularExpression(pattern: zyliaPattern, options: [.caseInsensitive]),
+           re.firstMatch(in: name, range: range) != nil {
+            return true
+        }
+
+        return false
     }
 
     /// Compute the probable slug for the source file using the default (filename-derived)
@@ -229,7 +248,7 @@ public final class ConversionPipeline: ObservableObject {
             let previewMic: SourceMicType
             switch probeReader.metadata.channelCount {
             case 16: previewMic = .ambixThirdOrder
-            default: previewMic = .vrh8AFormat
+            default: previewMic = PreferencesStore.defaultMicForFourChannel
             }
             let job = ConversionJob(
                 sourceFile: snapshot.sourceURL,
