@@ -55,4 +55,30 @@ final class AmbisonicDecoderTests: XCTestCase {
         let output = decoder.decode(interleavedAFormat: input, frameCount: 48000)
         XCTAssertEqual(output.count, 48000 * 4)
     }
+
+    func test_vDSPMatchesScalar_forKnownInput() {
+        // Known 4×4 matrix — also exercises the non-VRH8 code path.
+        let matrix: [[Float]] = [
+            [0.5,  0.5,  0.5,  0.5],
+            [0.5, -0.5,  0.5, -0.5],
+            [0.5,  0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5,  0.5]
+        ]
+        let decoder = AmbisonicDecoder(matrix: matrix)
+        let frameCount = 1000
+        let input = SyntheticAmbisonicSignals.aFormatNoise(frameCount: frameCount, seed: 123)
+        let output = decoder.decode(interleavedAFormat: input, frameCount: frameCount)
+
+        // Re-compute via the original scalar loop for a sample of frames and verify match.
+        for f in [0, 100, 500, 999] {
+            for outCh in 0..<4 {
+                var expected: Float = 0
+                for inCh in 0..<4 {
+                    expected += matrix[outCh][inCh] * input[f * 4 + inCh]
+                }
+                XCTAssertEqual(output[f * 4 + outCh], expected, accuracy: 1e-4,
+                               "frame \(f) ch \(outCh) mismatch: got \(output[f * 4 + outCh]), expected \(expected)")
+            }
+        }
+    }
 }

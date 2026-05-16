@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 public struct SpeakerPosition: Sendable, Equatable {
@@ -23,10 +24,20 @@ public struct VirtualLoudspeakerRig: Sendable {
     public var speakerNames: [String] { speakerPositions.map { $0.name } }
 
     private let decodeMatrix: [[Float]]   // [speaker][bformatChannel: W,Y,Z,X]
+    /// Flattened row-major decode matrix for cblas_sgemm. Precomputed once at init.
+    private let flatMatrix: [Float]       // speaker × 4 in row-major order
 
     public init(speakerPositions: [SpeakerPosition]) {
         self.speakerPositions = speakerPositions
-        self.decodeMatrix = Self.buildDecodeMatrix(positions: speakerPositions)
+        let dm = Self.buildDecodeMatrix(positions: speakerPositions)
+        self.decodeMatrix = dm
+        // Flatten row-major for cblas_sgemm
+        var flat: [Float] = []
+        flat.reserveCapacity(dm.count * 4)
+        for row in dm {
+            flat.append(contentsOf: row)
+        }
+        self.flatMatrix = flat
     }
 
     /// Atmos bed channel order: L, R, C, LFE, Lss, Rss, Lrs, Rrs, Ltf, Rtf
@@ -60,14 +71,33 @@ public struct VirtualLoudspeakerRig: Sendable {
     }
 
     /// Decode an interleaved B-format buffer into an interleaved N-speaker buffer.
+    ///
+    /// Uses cblas_sgemm: C = A · B^T where A = input (N×4), B = flatMatrix (M×4).
+    /// N = frameCount, K = 4 (B-format channels), M = speakerCount.
     public func decode(interleavedBformat input: [Float], frameCount: Int) -> [Float] {
         let speakerCount = speakerPositions.count
+        let bformatChannels = 4
         var output = [Float](repeating: 0, count: frameCount * speakerCount)
-        for f in 0..<frameCount {
-            let frame = Array(input[(f * 4)..<((f + 1) * 4)])
-            let speakers = decode(bformatFrame: frame)
-            for s in 0..<speakerCount {
-                output[f * speakerCount + s] = speakers[s]
+        input.withUnsafeBufferPointer { aPtr in
+            flatMatrix.withUnsafeBufferPointer { bPtr in
+                output.withUnsafeMutableBufferPointer { cPtr in
+                    cblas_sgemm(
+                        CblasRowMajor,
+                        CblasNoTrans,               // op(A) = A  (frameCount × 4)
+                        CblasTrans,                 // op(B) = B^T (4 × speakerCount)
+                        Int32(frameCount),          // M: rows of C and op(A)
+                        Int32(speakerCount),        // N: cols of C and op(B)
+                        Int32(bformatChannels),     // K: cols of op(A) / rows of op(B)
+                        1.0,                        // α
+                        aPtr.baseAddress,
+                        Int32(bformatChannels),     // lda = K
+                        bPtr.baseAddress,
+                        Int32(bformatChannels),     // ldb = K  (B is speakerCount×4 row-major)
+                        0.0,                        // β
+                        cPtr.baseAddress,
+                        Int32(speakerCount)         // ldc = speakerCount
+                    )
+                }
             }
         }
         return output

@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 public enum AmbisonicOrder: Int, Sendable, Equatable {
@@ -38,11 +39,21 @@ public struct HigherOrderAmbisonicDecoder: Sendable {
 
     /// decodeMatrix[speaker][ambisonicChannel]
     private let decodeMatrix: [[Float]]
+    /// Flattened row-major decode matrix for cblas_sgemm. Precomputed once at init.
+    private let flatMatrix: [Float]   // speakerCount × channelCount in row-major order
 
     public init(order: AmbisonicOrder, speakerPositions: [SpeakerPosition]) {
         self.order = order
         self.speakerPositions = speakerPositions
-        self.decodeMatrix = Self.buildDecodeMatrix(order: order, positions: speakerPositions)
+        let dm = Self.buildDecodeMatrix(order: order, positions: speakerPositions)
+        self.decodeMatrix = dm
+        // Flatten row-major for cblas_sgemm
+        var flat: [Float] = []
+        flat.reserveCapacity(dm.count * order.channelCount)
+        for row in dm {
+            flat.append(contentsOf: row)
+        }
+        self.flatMatrix = flat
     }
 
     /// Decode one frame of B-format (ACN-ordered SN3D) to all speaker outputs.
@@ -62,19 +73,34 @@ public struct HigherOrderAmbisonicDecoder: Sendable {
     }
 
     /// Decode an interleaved buffer.
+    ///
+    /// Uses cblas_sgemm: C = A · B^T where A = input (N×K), B = flatMatrix (M×K).
+    /// N = frameCount, K = order.channelCount, M = speakerPositions.count.
     public func decode(interleavedAmbisonic input: [Float], frameCount: Int) -> [Float] {
         let inCh = order.channelCount
         let outCh = speakerPositions.count
         precondition(input.count >= frameCount * inCh, "input buffer too small")
         var output = [Float](repeating: 0, count: frameCount * outCh)
-        for f in 0..<frameCount {
-            for s in 0..<outCh {
-                var sum: Float = 0
-                let row = decodeMatrix[s]
-                for c in 0..<inCh {
-                    sum += row[c] * input[f * inCh + c]
+        input.withUnsafeBufferPointer { aPtr in
+            flatMatrix.withUnsafeBufferPointer { bPtr in
+                output.withUnsafeMutableBufferPointer { cPtr in
+                    cblas_sgemm(
+                        CblasRowMajor,
+                        CblasNoTrans,       // op(A) = A  (frameCount × inCh)
+                        CblasTrans,         // op(B) = B^T (inCh × outCh)
+                        Int32(frameCount),  // M: rows of C and op(A)
+                        Int32(outCh),       // N: cols of C and op(B)
+                        Int32(inCh),        // K: cols of op(A) / rows of op(B)
+                        1.0,                // α
+                        aPtr.baseAddress,
+                        Int32(inCh),        // lda = K
+                        bPtr.baseAddress,
+                        Int32(inCh),        // ldb = K  (B is outCh×inCh row-major)
+                        0.0,                // β
+                        cPtr.baseAddress,
+                        Int32(outCh)        // ldc = outCh
+                    )
                 }
-                output[f * outCh + s] = sum
             }
         }
         return output

@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 /// Writes a Dolby Atmos Master ADM BWF .wav with a 7.1.2 bed pack (10 channels, 24-bit, 48 kHz).
@@ -50,16 +51,35 @@ public final class ADMBWFWriter {
 
     /// Append interleaved bed frames. `floats` must have at least `frameCount × 10` elements.
     /// Audio is clamped to [-1, 1] and encoded as 24-bit signed integer PCM (little-endian).
+    ///
+    /// Scale+clamp uses vDSP_vsmul + vDSP_vclip (vectorised); byte-pack stays scalar
+    /// because there is no 24-bit SIMD primitive.
     public func appendBedFrames(_ floats: [Float], frameCount: Int) throws {
-        precondition(floats.count >= frameCount * channelCount, "buffer too small")
-        var bytes = Data(capacity: frameCount * channelCount * 3)
-        for i in 0..<(frameCount * channelCount) {
-            let clamped = max(-1.0, min(1.0, floats[i]))
-            let intVal = Int32(clamped * Float(0x7FFFFF))
-            bytes.append(UInt8(intVal & 0xFF))
-            bytes.append(UInt8((intVal >> 8) & 0xFF))
-            bytes.append(UInt8((intVal >> 16) & 0xFF))
+        let totalSamples = frameCount * channelCount
+        precondition(floats.count >= totalSamples, "buffer too small")
+
+        // Scale [-1, +1] → [-0x7FFFFF, +0x7FFFFF]
+        var scaled = [Float](repeating: 0, count: totalSamples)
+        var scale: Float = Float(0x7FFFFF)
+        vDSP_vsmul(floats, 1, &scale, &scaled, 1, vDSP_Length(totalSamples))
+
+        // Clamp to [-0x7FFFFF, +0x7FFFFF] to guard against overshoot
+        var lower: Float = -Float(0x7FFFFF)
+        var upper: Float =  Float(0x7FFFFF)
+        vDSP_vclip(scaled, 1, &lower, &upper, &scaled, 1, vDSP_Length(totalSamples))
+
+        // Pack to interleaved 24-bit little-endian (3 bytes per sample)
+        var bytes = Data(count: totalSamples * 3)
+        bytes.withUnsafeMutableBytes { rawPtr in
+            let p = rawPtr.bindMemory(to: UInt8.self).baseAddress!
+            for i in 0..<totalSamples {
+                let v = Int32(scaled[i])   // truncates toward zero; already clamped
+                p[i * 3 + 0] = UInt8(v & 0xFF)
+                p[i * 3 + 1] = UInt8((v >> 8) & 0xFF)
+                p[i * 3 + 2] = UInt8((v >> 16) & 0xFF)
+            }
         }
+
         handle.write(bytes)
         framesWritten += frameCount
     }
