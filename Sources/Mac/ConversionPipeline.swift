@@ -83,10 +83,36 @@ public final class ConversionPipeline: ObservableObject {
         jobs[index].status = .converting
         let snapshot = jobs[index]
 
+        // Auto-detect mic type and R2 sub-prefix from channel count.
+        // 4-ch → Zoom VRH-8 A-format → zoom-bounces
+        // 16-ch → Zylia ZM-1 3rd-order AmbiX → zylia-bounces
+        // Other → fail with a clear message.
+        let mic: SourceMicType
+        let r2Category: String
+        do {
+            let probeReader = try WavFileReader(url: snapshot.sourceURL)
+            switch probeReader.metadata.channelCount {
+            case 4:
+                mic = .vrh8AFormat
+                r2Category = "field-recording/zoom-bounces"
+            case 16:
+                mic = .ambixThirdOrder
+                r2Category = "field-recording/zylia-bounces"
+            default:
+                jobs[index].status = .failed
+                jobs[index].errorMessage = "unsupported channel count: \(probeReader.metadata.channelCount) (expected 4 or 16)"
+                return
+            }
+        } catch {
+            jobs[index].status = .failed
+            jobs[index].errorMessage = "could not read WAV header: \(error)"
+            return
+        }
+
         let job = ConversionJob(
             sourceFile: snapshot.sourceURL,
             outputDirectory: staging,
-            mic: .vrh8AFormat,
+            mic: mic,
             programmeName: snapshot.title,
             converterVersion: converterVersion
         )
@@ -106,10 +132,9 @@ public final class ConversionPipeline: ObservableObject {
                 outputDirectory: stagingForSlug
             )
 
-            // Upload to R2 at stems/spatial-mix/field-recording/zoom-bounces/<slug>/
-            // The zoom-bounces sub-prefix groups Zoom H8 + VRH-8 conversions distinctly;
-            // future Ambeo / Zylia decoders will get their own sub-prefixes.
-            let r2Prefix = "stems/spatial-mix/field-recording/zoom-bounces/\(conv.slug)/"
+            // Upload to R2. Sub-prefix is mic-type-specific so conversions from different
+            // sources are grouped distinctly in the bucket.
+            let r2Prefix = "stems/spatial-mix/\(r2Category)/\(conv.slug)/"
             let result = try await uploader.uploadFolder(
                 localFolder: convertedFolder,
                 r2Prefix: r2Prefix
@@ -200,10 +225,16 @@ public final class ConversionPipeline: ObservableObject {
         jobs[index].status = .converting
 
         do {
+            let probeReader = try WavFileReader(url: snapshot.sourceURL)
+            let previewMic: SourceMicType
+            switch probeReader.metadata.channelCount {
+            case 16: previewMic = .ambixThirdOrder
+            default: previewMic = .vrh8AFormat
+            }
             let job = ConversionJob(
                 sourceFile: snapshot.sourceURL,
                 outputDirectory: staging,
-                mic: .vrh8AFormat,
+                mic: previewMic,
                 programmeName: snapshot.title,
                 converterVersion: converterVersion
             )

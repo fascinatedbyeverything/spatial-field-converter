@@ -1,9 +1,15 @@
 import Foundation
 
+public enum WavSampleFormat: Sendable, Equatable {
+    case pcmInt     // signed integer PCM (16/24/32-bit)
+    case pcmFloat   // IEEE float (32-bit; 64-bit is uncommon for audio)
+}
+
 public struct WavMetadata: Sendable, Equatable {
     public let channelCount: Int
     public let sampleRate: Int
     public let bitsPerSample: Int
+    public let sampleFormat: WavSampleFormat
     public let frameCount: Int
     public let durationSeconds: Double
     public let dataChunkOffset: Int
@@ -20,6 +26,7 @@ public enum WavReadError: Error {
     case missingFmtChunk
     case missingDataChunk
     case unsupportedFormat(UInt16)
+    case unsupportedExtensibleSubformat(Data)
 }
 
 /// Reads a WAV file's RIFF header, format chunk, optional BEXT chunk
@@ -56,7 +63,7 @@ public final class WavFileReader {
         }
 
         var offset: UInt64 = 12
-        var fmt: (channels: Int, sampleRate: Int, bitsPerSample: Int)?
+        var fmt: (channels: Int, sampleRate: Int, bitsPerSample: Int, sampleFormat: WavSampleFormat)?
         var dataInfo: (offset: Int, size: Int)?
         var bextDescription: String?
         var bextOriginationDate: String?
@@ -75,11 +82,33 @@ public final class WavFileReader {
                 try handle.seek(toOffset: payloadOffset)
                 guard let payload = try? handle.read(upToCount: Int(size)) else { break }
                 let format = payload.subdata(in: 0..<2).withUnsafeBytes { $0.load(as: UInt16.self).littleEndian }
-                guard format == 1 || format == 0xFFFE else { throw WavReadError.unsupportedFormat(format) }
                 let channels = Int(payload.subdata(in: 2..<4).withUnsafeBytes { $0.load(as: UInt16.self).littleEndian })
                 let sampleRate = Int(payload.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian })
                 let bits = Int(payload.subdata(in: 14..<16).withUnsafeBytes { $0.load(as: UInt16.self).littleEndian })
-                fmt = (channels, sampleRate, bits)
+
+                let sampleFmt: WavSampleFormat
+                switch format {
+                case 1:
+                    sampleFmt = .pcmInt
+                case 3:
+                    sampleFmt = .pcmFloat
+                case 0xFFFE:
+                    // WAVE_FORMAT_EXTENSIBLE: subformat GUID at bytes [24..40] of the fmt payload.
+                    // First 4 bytes of GUID encode the format: 0x00000001 = PCM int, 0x00000003 = float.
+                    guard payload.count >= 28 else { throw WavReadError.unsupportedFormat(format) }
+                    let subGuid = payload.subdata(in: 24..<28)
+                    let subCode = subGuid.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
+                    switch subCode {
+                    case 1: sampleFmt = .pcmInt
+                    case 3: sampleFmt = .pcmFloat
+                    default:
+                        throw WavReadError.unsupportedExtensibleSubformat(subGuid)
+                    }
+                default:
+                    throw WavReadError.unsupportedFormat(format)
+                }
+
+                fmt = (channels, sampleRate, bits, sampleFmt)
             case "data":
                 dataInfo = (Int(payloadOffset), Int(size))
             case "bext":
@@ -119,6 +148,7 @@ public final class WavFileReader {
             channelCount: fmt.channels,
             sampleRate: fmt.sampleRate,
             bitsPerSample: fmt.bitsPerSample,
+            sampleFormat: fmt.sampleFormat,
             frameCount: frameCount,
             durationSeconds: duration,
             dataChunkOffset: dataInfo.offset,

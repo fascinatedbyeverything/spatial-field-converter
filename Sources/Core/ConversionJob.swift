@@ -1,16 +1,19 @@
 import Foundation
 
-/// Source mic type — determines which A→B-format decode matrix to apply.
-/// v0.1 supports Zoom VRH-8 (A-format) and passthrough (file is already B-format AmbiX).
+/// Source mic type — determines which decode path to use.
+/// v0.1 supports Zoom VRH-8 (A-format, 4ch), B-format AmbiX passthrough (4ch),
+/// and Zylia ZM-1 / 3rd-order AmbiX (16ch).
 public enum SourceMicType: String, Sendable {
-    case vrh8AFormat = "Zoom VRH-8 (A-format)"
-    case alreadyBFormat = "B-format AmbiX (passthrough)"
+    case vrh8AFormat     = "Zoom VRH-8 (A-format)"
+    case alreadyBFormat  = "B-format AmbiX 1st-order (passthrough)"
+    case ambixThirdOrder = "B-format AmbiX 3rd-order (Zylia)"
 
-    /// Returns the A→B-format decode matrix, or nil if input is already B-format.
+    /// Returns the A→B-format decode matrix for 1st-order paths, or nil otherwise.
     public var decodeMatrix: [[Float]]? {
         switch self {
-        case .vrh8AFormat: return VRH8DecoderMatrix.matrix
-        case .alreadyBFormat: return nil
+        case .vrh8AFormat:     return VRH8DecoderMatrix.matrix
+        case .alreadyBFormat:  return nil
+        case .ambixThirdOrder: return nil   // HOA path uses HigherOrderAmbisonicDecoder
         }
     }
 }
@@ -18,13 +21,16 @@ public enum SourceMicType: String, Sendable {
 public enum ConversionJobError: Error, CustomStringConvertible {
     case wrongChannelCount(Int)
     case unsupportedSampleRate(Int)
+    case channelCountMicTypeMismatch(channelCount: Int, mic: SourceMicType)
 
     public var description: String {
         switch self {
         case .wrongChannelCount(let n):
-            return "expected 4-channel ambisonic input, found \(n) channels"
+            return "unsupported channel count: \(n) (expected 4 or 16)"
         case .unsupportedSampleRate(let r):
             return "expected 48000 Hz sample rate, found \(r) Hz"
+        case .channelCountMicTypeMismatch(let n, let mic):
+            return "channel count \(n) does not match mic type '\(mic.rawValue)'"
         }
     }
 }
@@ -69,11 +75,19 @@ public final class ConversionJob: @unchecked Sendable {
         // 1. Read source
         let reader = try WavFileReader(url: sourceFile)
         let metadata = reader.metadata
-        guard metadata.channelCount == 4 else {
-            throw ConversionJobError.wrongChannelCount(metadata.channelCount)
+        let channelCount = metadata.channelCount
+        guard channelCount == 4 || channelCount == 16 else {
+            throw ConversionJobError.wrongChannelCount(channelCount)
         }
         guard metadata.sampleRate == 48000 else {
             throw ConversionJobError.unsupportedSampleRate(metadata.sampleRate)
+        }
+        // Validate mic type matches channel count
+        if mic == .ambixThirdOrder && channelCount != 16 {
+            throw ConversionJobError.channelCountMicTypeMismatch(channelCount: channelCount, mic: mic)
+        }
+        if (mic == .vrh8AFormat || mic == .alreadyBFormat) && channelCount != 4 {
+            throw ConversionJobError.channelCountMicTypeMismatch(channelCount: channelCount, mic: mic)
         }
 
         // 2. Slug + output path
@@ -84,29 +98,42 @@ public final class ConversionJob: @unchecked Sendable {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let outputURL = outputDirectory.appendingPathComponent("\(slug).wav")
 
-        // 3. Streaming pipeline: read → A→B → B→7.1.2 → ADM BWF write
-        let sampleReader = try WavSampleReader(reader: reader)
-        let aFormatDecoder = AmbisonicDecoder(matrix: mic.decodeMatrix ?? identityMatrix4x4())
-        let rig = VirtualLoudspeakerRig.atmos7_1_2()
-        let streamingDecoder = rig.makeStreamingDecoder(sampleRate: 48000)
-
         let admSession = ADMBedSession(programmeName: programmeName)
         let admWriter = try ADMBWFWriter(url: outputURL, session: admSession)
+        let sampleReader = try WavSampleReader(reader: reader)
 
-        while let block = try sampleReader.readNextBlock(maxFrames: chunkFrames) {
-            // A → B-format (or passthrough)
-            let bformat: [Float]
-            if mic.decodeMatrix != nil {
-                bformat = aFormatDecoder.decode(interleavedAFormat: block.samples, frameCount: block.frameCount)
-            } else {
-                bformat = block.samples
+        if mic == .ambixThirdOrder {
+            // 3a. HOA path: 16-ch AmbiX 3rd-order → 7.1.2 bed
+            let hoaDecoder = HigherOrderAmbisonicDecoder(
+                order: .third,
+                speakerPositions: VirtualLoudspeakerRig.atmos7_1_2().speakerPositions
+            )
+            let streamingHOA = hoaDecoder.makeStreamingDecoder(sampleRate: 48000)
+
+            while let block = try sampleReader.readNextBlock(maxFrames: chunkFrames) {
+                // Input is already B-format AmbiX 16-ch — no A→B step needed
+                let bed = streamingHOA.process(interleavedAmbisonic: block.samples, frameCount: block.frameCount)
+                try admWriter.appendBedFrames(bed, frameCount: block.frameCount)
             }
+        } else {
+            // 3b. 1st-order path: read → A→B (or passthrough) → B→7.1.2 → ADM BWF write
+            let aFormatDecoder = AmbisonicDecoder(matrix: mic.decodeMatrix ?? identityMatrix4x4())
+            let rig = VirtualLoudspeakerRig.atmos7_1_2()
+            let streamingDecoder = rig.makeStreamingDecoder(sampleRate: 48000)
 
-            // B-format → 7.1.2 bed (with LFE low-pass)
-            let bed = streamingDecoder.process(interleavedBformat: bformat, frameCount: block.frameCount)
+            while let block = try sampleReader.readNextBlock(maxFrames: chunkFrames) {
+                // A → B-format (or passthrough)
+                let bformat: [Float]
+                if mic.decodeMatrix != nil {
+                    bformat = aFormatDecoder.decode(interleavedAFormat: block.samples, frameCount: block.frameCount)
+                } else {
+                    bformat = block.samples
+                }
 
-            // Write bed frames into the ADM BWF
-            try admWriter.appendBedFrames(bed, frameCount: block.frameCount)
+                // B-format → 7.1.2 bed (with LFE low-pass)
+                let bed = streamingDecoder.process(interleavedBformat: bformat, frameCount: block.frameCount)
+                try admWriter.appendBedFrames(bed, frameCount: block.frameCount)
+            }
         }
 
         try admWriter.finalize()
