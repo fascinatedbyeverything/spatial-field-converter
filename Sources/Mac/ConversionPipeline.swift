@@ -45,7 +45,10 @@ public final class ConversionPipeline: ObservableObject {
     /// Add a list of URLs to the queue. For folders, callers should pre-expand to .wav files.
     public func addFiles(_ urls: [URL]) {
         for url in urls {
-            let title = url.deletingPathExtension().lastPathComponent
+            let basename = url.deletingPathExtension().lastPathComponent
+            // H8 generic filenames (Mic1234, MIC0001, ZOOM0001, etc.) get blanked so the user
+            // is forced to type a meaningful name. Anything else stays as-is.
+            let title = Self.isGenericRecorderName(basename) ? "" : basename
             var job = Job(sourceURL: url, title: title)
 
             // Pre-check: have we already converted this file? If the ADM BWF already exists
@@ -117,6 +120,17 @@ public final class ConversionPipeline: ObservableObject {
             jobs[index].status = .failed
             jobs[index].errorMessage = "\(error)"
         }
+    }
+
+    /// True if `name` matches a generic field-recorder default (Mic1234, MIC0001, ZOOM0123, etc).
+    /// Used to blank the inspector title field so the user must enter something meaningful
+    /// before Convert+Upload becomes enabled.
+    static func isGenericRecorderName(_ name: String) -> Bool {
+        // Case-insensitive: letters followed by digits with no separators.
+        let regex = try? NSRegularExpression(pattern: #"^(mic|zoom|tr|track|file|rec)[_-]?\d+$"#,
+                                              options: [.caseInsensitive])
+        let range = NSRange(name.startIndex..<name.endIndex, in: name)
+        return (regex?.firstMatch(in: name, range: range)) != nil
     }
 
     /// Compute the probable slug for the source file using the default (filename-derived)

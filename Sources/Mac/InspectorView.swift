@@ -10,6 +10,17 @@ public struct InspectorView: View {
         self.previewPlayer = pipeline.previewPlayer
     }
 
+    /// True if any enabled pending row has an empty / whitespace-only title.
+    /// Used to gate Convert + Upload so users can't ship "mic1234" by accident.
+    private var hasUnnamedEnabledRow: Bool {
+        pipeline.jobs.contains { job in
+            job.enabled
+            && job.status != .alreadyConverted
+            && job.status != .done
+            && job.title.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -46,7 +57,10 @@ public struct InspectorView: View {
                     Task { await pipeline.runAll() }
                 }
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(pipeline.isRunning || pipeline.jobs.isEmpty)
+                .disabled(pipeline.isRunning || pipeline.jobs.isEmpty || hasUnnamedEnabledRow)
+                .help(hasUnnamedEnabledRow
+                      ? "Some queued recordings still need a name. Type a title for each row before uploading."
+                      : "Convert and upload the queued recordings to R2.")
             }
             .padding()
 
@@ -61,9 +75,19 @@ public struct InspectorView: View {
                             .disabled(pipeline.isRunning || job.status == .alreadyConverted)
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                TextField("Title", text: $job.title)
+                                TextField("Name this recording (required)", text: $job.title)
                                     .textFieldStyle(.roundedBorder)
                                     .disabled(pipeline.isRunning)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .stroke(job.title.trimmingCharacters(in: .whitespaces).isEmpty
+                                                    && job.enabled
+                                                    && job.status != .alreadyConverted
+                                                    && job.status != .done
+                                                    ? Color.orange.opacity(0.7)
+                                                    : Color.clear,
+                                                    lineWidth: 1.5)
+                                    )
 
                                 let isThisRowPlaying = previewPlayer.isPlaying &&
                                     previewPlayer.currentFile?.path.contains(job.slug ?? "___nope___") == true
