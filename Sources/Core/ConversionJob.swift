@@ -1,10 +1,11 @@
 import Foundation
 
 /// Source mic type — determines which decode path to use.
-/// v0.1 supports Zoom VRH-8 (A-format, 4ch), B-format AmbiX passthrough (4ch),
-/// and Zylia ZM-1 / 3rd-order AmbiX (16ch).
-public enum SourceMicType: String, Sendable {
+/// v0.1 supports Zoom VRH-8 (A-format, 4ch), Sennheiser Ambeo VR (A-format, 4ch),
+/// B-format AmbiX passthrough (4ch), and Zylia ZM-1 / 3rd-order AmbiX (16ch).
+public enum SourceMicType: String, Sendable, CaseIterable {
     case vrh8AFormat     = "Zoom VRH-8 (A-format)"
+    case ambeoAFormat    = "Sennheiser Ambeo VR (A-format)"
     case alreadyBFormat  = "B-format AmbiX 1st-order (passthrough)"
     case ambixThirdOrder = "B-format AmbiX 3rd-order (Zylia)"
 
@@ -12,6 +13,7 @@ public enum SourceMicType: String, Sendable {
     public var decodeMatrix: [[Float]]? {
         switch self {
         case .vrh8AFormat:     return VRH8DecoderMatrix.matrix
+        case .ambeoAFormat:    return AmbeoDecoderMatrix.matrix
         case .alreadyBFormat:  return nil
         case .ambixThirdOrder: return nil   // HOA path uses HigherOrderAmbisonicDecoder
         }
@@ -86,7 +88,7 @@ public final class ConversionJob: @unchecked Sendable {
         if mic == .ambixThirdOrder && channelCount != 16 {
             throw ConversionJobError.channelCountMicTypeMismatch(channelCount: channelCount, mic: mic)
         }
-        if (mic == .vrh8AFormat || mic == .alreadyBFormat) && channelCount != 4 {
+        if (mic == .vrh8AFormat || mic == .ambeoAFormat || mic == .alreadyBFormat) && channelCount != 4 {
             throw ConversionJobError.channelCountMicTypeMismatch(channelCount: channelCount, mic: mic)
         }
 

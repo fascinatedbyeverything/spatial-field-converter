@@ -2,6 +2,9 @@ import Foundation
 
 public enum PreferencesStore {
     private static let stagingDirKey = "stagingDirectoryPath"
+    private static let defaultMicKey = "defaultMicForFourChannel"
+
+    // MARK: - Staging directory
 
     public static var stagingDirectory: URL {
         get {
@@ -27,5 +30,22 @@ public enum PreferencesStore {
                 .appendingPathComponent("staging")
         }
         set { UserDefaults.standard.set(newValue.path, forKey: stagingDirKey) }
+    }
+
+    // MARK: - Default mic for 4-channel recordings
+
+    /// Which mic type to use when a 4-channel WAV is dropped.
+    /// Default: .vrh8AFormat (Zoom VRH-8).
+    /// Override via `defaults write com.fascinatedbyeverything.spatialfieldconverter
+    ///   defaultMicForFourChannel "Sennheiser Ambeo VR (A-format)"`
+    public static var defaultMicForFourChannel: SourceMicType {
+        get {
+            if let raw = UserDefaults.standard.string(forKey: defaultMicKey),
+               let mic = SourceMicType(rawValue: raw) {
+                return mic
+            }
+            return .vrh8AFormat
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: defaultMicKey) }
     }
 }

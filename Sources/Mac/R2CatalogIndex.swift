@@ -244,6 +244,147 @@ public final class R2CatalogIndex: ObservableObject {
         return localURL
     }
 
+    // MARK: - Timeline JSON
+
+    /// Decoded timeline.json for a source recording.
+    public struct TimelineData: Sendable {
+        public struct Scene: Sendable {
+            public let startSec: Double
+            public let endSec: Double
+            public let label: String
+            public let dominantCategories: [String]
+        }
+        public struct Event: Sendable {
+            public let timeSec: Double
+            public let timeDisplay: String
+            public let kind: String          // "species" | "category"
+            public let label: String
+            public let scientific: String?
+            public let source: String
+            public let confidence: Double
+            public let durationSec: Double
+        }
+        public let scenes: [Scene]
+        public let events: [Event]
+    }
+
+    /// Download timeline.json for `slug` from R2 (caches locally).
+    /// R2 key: stems/spatial-mix/field-recording/<category>/<slug>/timeline.json
+    public func downloadTimeline(slug: String, category: String) async throws -> TimelineData {
+        let r2Key = "stems/spatial-mix/field-recording/\(category)/\(slug)/timeline.json"
+        let localURL = cacheDirectory
+            .appendingPathComponent(slug)
+            .appendingPathComponent("timeline.json")
+
+        if !FileManager.default.fileExists(atPath: localURL.path) {
+            try await downloadR2Key(r2Key, to: localURL)
+        }
+
+        let data = try Data(contentsOf: localURL)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw R2CatalogIndexError.badJSON("timeline.json", NSError(domain: "R2CatalogIndex", code: 2))
+        }
+        return parseTimelineJSON(root)
+    }
+
+    /// Download the raw timeline.md for `slug` from R2. Returns local URL.
+    public func downloadTimelineMD(slug: String, category: String) async throws -> URL {
+        let r2Key = "stems/spatial-mix/field-recording/\(category)/\(slug)/timeline.md"
+        let localURL = cacheDirectory
+            .appendingPathComponent(slug)
+            .appendingPathComponent("timeline.md")
+        if !FileManager.default.fileExists(atPath: localURL.path) {
+            try await downloadR2Key(r2Key, to: localURL)
+        }
+        return localURL
+    }
+
+    // MARK: - Sample clip cache
+
+    /// Returns the local cache URL for a pre-extracted sample clip.
+    /// Derives the filename from the BirdNET convention:
+    ///   <species-slug>__<source-slug>__t<startInt>s__c<confPct>.m4a
+    public func sampleClipLocalURL(event: IndexedEvent) -> URL {
+        let speciesSlug = slugify(event.label)
+        let confPct = Int(event.confidence * 100)
+        let tStart = Int(event.startSec)
+        let filename = "\(speciesSlug)__\(event.sourceSlug)__t\(tStart)s__c\(String(format: "%03d", confPct)).m4a"
+        return cacheDirectory
+            .appendingPathComponent("samples")
+            .appendingPathComponent(speciesSlug)
+            .appendingPathComponent(filename)
+    }
+
+    /// Returns the R2 key for the pre-extracted sample clip.
+    public func sampleClipR2Key(event: IndexedEvent) -> String {
+        let speciesSlug = slugify(event.label)
+        let confPct = Int(event.confidence * 100)
+        let tStart = Int(event.startSec)
+        let filename = "\(speciesSlug)__\(event.sourceSlug)__t\(tStart)s__c\(String(format: "%03d", confPct)).m4a"
+        return "samples/birds/\(speciesSlug)/\(filename)"
+    }
+
+    /// Download a pre-extracted sample clip from R2 to the library cache.
+    /// Returns the local URL.
+    public func downloadSampleClip(event: IndexedEvent) async throws -> URL {
+        let r2Key = sampleClipR2Key(event: event)
+        let localURL = sampleClipLocalURL(event: event)
+        try await downloadR2Key(r2Key, to: localURL)
+        return localURL
+    }
+
+    // MARK: - Private parse helpers
+
+    private func parseTimelineJSON(_ root: [String: Any]) -> TimelineData {
+        var scenes: [TimelineData.Scene] = []
+        if let scenesArr = root["scenes"] as? [[String: Any]] {
+            for s in scenesArr {
+                let startSec = s["startSec"] as? Double ?? s["start"] as? Double ?? 0
+                let endSec   = s["endSec"]   as? Double ?? s["end"]   as? Double ?? 0
+                let label    = s["label"] as? String ?? ""
+                let cats     = s["dominantCategories"] as? [String] ?? []
+                scenes.append(TimelineData.Scene(startSec: startSec, endSec: endSec,
+                                                  label: label, dominantCategories: cats))
+            }
+        }
+
+        var events: [TimelineData.Event] = []
+        let eventsArr = (root["events"] as? [[String: Any]]) ?? []
+        for e in eventsArr {
+            let timeSec     = e["timeSec"] as? Double ?? e["startSec"] as? Double ?? 0
+            let timeDisplay = e["timeDisplay"] as? String ?? formatTimeline(timeSec)
+            let kind        = e["kind"] as? String ?? (e["scientific"] != nil ? "species" : "category")
+            let label       = e["label"] as? String ?? ""
+            let scientific  = e["scientific"] as? String
+            let source      = e["source"] as? String ?? ""
+            let confidence  = e["confidence"] as? Double ?? 1.0
+            let duration    = e["durationSec"] as? Double ?? e["duration"] as? Double ?? 0
+            events.append(TimelineData.Event(timeSec: timeSec, timeDisplay: timeDisplay,
+                                              kind: kind, label: label, scientific: scientific,
+                                              source: source, confidence: confidence,
+                                              durationSec: duration))
+        }
+        return TimelineData(scenes: scenes, events: events)
+    }
+
+    private func formatTimeline(_ sec: Double) -> String {
+        let total = Int(sec)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
+    }
+
+    private func slugify(_ text: String) -> String {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+    }
+
     // MARK: - Private helpers
 
     private func ensureCacheDirectoryOnExternalDrive() throws {

@@ -34,6 +34,11 @@ public struct LibraryView: View {
         index.sources
     }
 
+    // Sample clip playback
+    @State private var playingClipEventID: UUID? = nil
+    @State private var downloadingClip: [UUID: Bool] = [:]
+    @State private var clipErrors: [UUID: String] = [:]
+
     // MARK: - Body
 
     public var body: some View {
@@ -41,7 +46,18 @@ public struct LibraryView: View {
             sidebarView
                 .frame(minWidth: 180, maxWidth: 240)
 
-            mainView
+            if let slug = selectedSourceSlug,
+               let source = sourceOptions.first(where: { $0.id == slug }) {
+                // Vertical split: events list on top, script panel beneath
+                VSplitView {
+                    mainView
+                    ScriptView(sourceSlug: slug, sourceCategory: source.sourceCategory)
+                        .environmentObject(index)
+                        .frame(minHeight: 180)
+                }
+            } else {
+                mainView
+            }
         }
     }
 
@@ -192,6 +208,31 @@ public struct LibraryView: View {
             Text("\(filteredEvents.count) result\(filteredEvents.count == 1 ? "" : "s")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            // Export search results CSV
+            Menu {
+                Button("Export Results (.csv)") {
+                    let csv = ExportService.buildSearchResultsCSV(events: filteredEvents)
+                    ExportService.saveText(csv,
+                                          defaultName: "search-results.csv",
+                                          allowedExtension: "csv")
+                }
+                .disabled(filteredEvents.isEmpty)
+
+                Button("Export Full Catalog (.csv)") {
+                    let csv = ExportService.buildFullArchiveCSV(events: index.allEvents)
+                    ExportService.saveText(csv,
+                                          defaultName: "full-catalog.csv",
+                                          allowedExtension: "csv")
+                }
+                .disabled(index.allEvents.isEmpty)
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 12))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Export results or full catalog as CSV")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -253,9 +294,14 @@ public struct LibraryView: View {
                 event: event,
                 isPlaying: playingEventID == event.id,
                 isDownloading: downloading[event.sourceSlug] == true,
-                downloadError: downloadErrors[event.id]
+                downloadError: downloadErrors[event.id],
+                isPlayingClip: playingClipEventID == event.id,
+                isDownloadingClip: downloadingClip[event.id] == true,
+                clipError: clipErrors[event.id]
             ) {
                 Task { await togglePlay(event) }
+            } onPlayClip: {
+                Task { await togglePlayClip(event) }
             }
             .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
         }
@@ -314,6 +360,52 @@ public struct LibraryView: View {
         }
     }
 
+    @MainActor
+    private func togglePlayClip(_ event: R2CatalogIndex.IndexedEvent) async {
+        if playingClipEventID == event.id {
+            player.stop()
+            playingClipEventID = nil
+            return
+        }
+
+        player.stop()
+        playingEventID = nil
+        playingClipEventID = nil
+        clipErrors.removeValue(forKey: event.id)
+
+        // Check local cache first
+        let localClipURL = index.sampleClipLocalURL(event: event)
+        let isLocal = FileManager.default.fileExists(atPath: localClipURL.path)
+
+        let clipURL: URL
+        if isLocal {
+            clipURL = localClipURL
+        } else {
+            downloadingClip[event.id] = true
+            do {
+                clipURL = try await index.downloadSampleClip(event: event)
+                downloadingClip[event.id] = false
+            } catch {
+                downloadingClip[event.id] = false
+                clipErrors[event.id] = "Clip download failed: \(error.localizedDescription)"
+                return
+            }
+        }
+
+        do {
+            try player.play(clipURL)
+            playingClipEventID = event.id
+        } catch {
+            clipErrors[event.id] = "Clip playback failed: \(error.localizedDescription)"
+            return
+        }
+
+        Task {
+            while player.isPlaying { try? await Task.sleep(nanoseconds: 200_000_000) }
+            if playingClipEventID == event.id { playingClipEventID = nil }
+        }
+    }
+
     // MARK: - Helpers
 
     private func eventCount(for slug: String) -> Int {
@@ -330,7 +422,11 @@ private struct EventRow: View {
     let isPlaying: Bool
     let isDownloading: Bool
     let downloadError: String?
+    let isPlayingClip: Bool
+    let isDownloadingClip: Bool
+    let clipError: String?
     let onPlay: () -> Void
+    let onPlayClip: () -> Void
 
     // Category-derived: species events are "birdnet" or similar label-driven;
     // apple-soundanalysis events tend to be category-level labels.
@@ -340,7 +436,7 @@ private struct EventRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            // Play / stop button
+            // Source play / stop button
             Button(action: onPlay) {
                 Group {
                     if isDownloading {
@@ -354,7 +450,25 @@ private struct EventRow: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(isPlaying ? Color.accentColor : .primary)
-            .help(isPlaying ? "Stop" : "Play from this timestamp")
+            .help(isPlaying ? "Stop" : "Play source recording at this timestamp")
+
+            // Sample clip play button — only for species events
+            if isSpeciesEvent {
+                Button(action: onPlayClip) {
+                    Group {
+                        if isDownloadingClip {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: isPlayingClip ? "stop.circle.fill" : "play.circle")
+                                .font(.system(size: 12))
+                        }
+                    }
+                    .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isPlayingClip ? Color.orange : Color.secondary)
+                .help(isPlayingClip ? "Stop clip" : "Play isolated sample clip")
+            }
 
             // Main info
             VStack(alignment: .leading, spacing: 2) {
@@ -392,6 +506,12 @@ private struct EventRow: View {
                     Text(err)
                         .font(.caption2)
                         .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
+                if let err = clipError {
+                    Text(err)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
                         .lineLimit(1)
                 }
             }
