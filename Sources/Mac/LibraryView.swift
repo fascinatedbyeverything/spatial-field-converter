@@ -1,5 +1,7 @@
 import SwiftUI
 import AVFoundation
+import AppKit
+import UniformTypeIdentifiers
 
 // ---------------------------------------------------------------------------
 // LibraryView — search / browse / play detected sound events from the R2 archive.
@@ -21,6 +23,12 @@ public struct LibraryView: View {
     // Per-row download progress (slug → Bool)
     @State private var downloading: [String: Bool] = [:]
     @State private var downloadErrors: [UUID: String] = [:]
+
+    // Gather state
+    @State private var isGathering: Bool = false
+    @State private var gatherProgress: String = ""
+    @State private var gatherProgressFraction: Double = 0.0
+    @State private var gatherError: String? = nil
 
     public init() {}
 
@@ -121,28 +129,45 @@ public struct LibraryView: View {
     }
 
     private var refreshFooter: some View {
-        HStack {
-            if let updated = index.lastUpdated {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+
+            if index.isLoading {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Loading catalog…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
+            } else if let updated = index.lastUpdated {
                 Text("Updated \(updated, style: .relative) ago")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            } else if index.isLoading {
-                ProgressView().controlSize(.mini)
-                Text("Loading…")
+                    .padding(.horizontal, 10)
+                    .padding(.top, 4)
+            } else {
+                Text("Not yet loaded")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 4)
             }
-            Spacer()
+
             Button {
                 Task { await index.refresh() }
             } label: {
-                Image(systemName: "arrow.clockwise")
+                Label("Refresh Catalog", systemImage: "arrow.clockwise.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .disabled(index.isLoading)
-            .help("Re-download index + events from R2")
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
         }
-        .padding(8)
     }
 
     // MARK: - Main area
@@ -163,6 +188,27 @@ public struct LibraryView: View {
                 resultsList
             }
         }
+        .sheet(isPresented: $isGathering) {
+            gatherProgressSheet
+        }
+    }
+
+    // MARK: - Gather progress sheet
+
+    private var gatherProgressSheet: some View {
+        VStack(spacing: 18) {
+            Text("Gathering Clips")
+                .font(.headline)
+            ProgressView(value: gatherProgressFraction)
+                .frame(width: 280)
+            Text(gatherProgress)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 280)
+        }
+        .padding(28)
+        .frame(minWidth: 340)
     }
 
     private var filtersBar: some View {
@@ -233,6 +279,29 @@ public struct LibraryView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Export results or full catalog as CSV")
+
+            // Gather buttons
+            Button {
+                Task { await gatherToFolder() }
+            } label: {
+                Label("Gather…", systemImage: "folder.badge.plus")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(filteredEvents.isEmpty || isGathering)
+            .help("Slice each result into individual clips and save to a folder")
+
+            Button {
+                Task { await gatherAsSingleFile() }
+            } label: {
+                Label("Gather File…", systemImage: "waveform.badge.plus")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(filteredEvents.isEmpty || isGathering)
+            .help("Concatenate all result clips into one .m4a with silence between")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -270,18 +339,26 @@ public struct LibraryView: View {
                     .foregroundStyle(.secondary)
             } else {
                 Image(systemName: "waveform.badge.magnifyingglass")
-                    .font(.largeTitle)
+                    .font(.system(size: 48))
                     .foregroundStyle(.quaternary)
-                Text("No events loaded")
+                    .padding(.bottom, 4)
+                Text("No recordings indexed")
+                    .font(.title3.weight(.semibold))
+                Text("Hit Refresh to load the field-recording catalog from R2.")
                     .font(.callout)
-                Text("Click Refresh to download the catalog from R2.")
-                    .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Refresh Now") {
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 280)
+                Button {
                     Task { await index.refresh() }
+                } label: {
+                    Label("Refresh Catalog", systemImage: "arrow.clockwise.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 8)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .controlSize(.large)
+                .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -403,6 +480,231 @@ public struct LibraryView: View {
         Task {
             while player.isPlaying { try? await Task.sleep(nanoseconds: 200_000_000) }
             if playingClipEventID == event.id { playingClipEventID = nil }
+        }
+    }
+
+    // MARK: - Gather to Folder
+
+    @MainActor
+    private func gatherToFolder() async {
+        let events = filteredEvents
+        guard !events.isEmpty else { return }
+
+        // Pick destination folder
+        guard let folderURL = await showOpenPanelForFolder() else { return }
+
+        isGathering = true
+        gatherError = nil
+        gatherProgress = "Starting…"
+        gatherProgressFraction = 0
+
+        defer {
+            isGathering = false
+            gatherProgress = ""
+            gatherProgressFraction = 0
+        }
+
+        let total = events.count
+        var bedCache: [String: URL] = [:]
+
+        for (i, event) in events.enumerated() {
+            gatherProgress = "Slicing \(i + 1) of \(total) — \(event.label)"
+            gatherProgressFraction = Double(i) / Double(total)
+
+            // Get bed.m4a (download once per slug)
+            let bedURL: URL
+            if let cached = bedCache[event.sourceSlug] {
+                bedURL = cached
+            } else {
+                let (localBed, isLocal) = index.bedURL(for: event.sourceSlug,
+                                                        category: event.sourceCategory)
+                if isLocal {
+                    bedURL = localBed
+                    bedCache[event.sourceSlug] = localBed
+                } else {
+                    do {
+                        let downloaded = try await index.downloadBed(slug: event.sourceSlug,
+                                                                      category: event.sourceCategory)
+                        bedURL = downloaded
+                        bedCache[event.sourceSlug] = downloaded
+                    } catch {
+                        gatherProgress = "Download failed for \(event.sourceSlug): \(error.localizedDescription)"
+                        continue
+                    }
+                }
+            }
+
+            let labelSlug = AudioSlicer.slugify(event.label)
+            let confPct = Int(event.confidence * 100)
+            let tStart = Int(event.startSec)
+            let filename = "\(event.sourceSlug)__\(labelSlug)__t\(tStart)s__c\(String(format: "%03d", confPct)).m4a"
+            let destURL = folderURL.appendingPathComponent(filename)
+
+            let padded = 1.0
+            let sliceStart = max(event.startSec - padded, 0)
+            let sliceEnd = event.startSec + max(event.durationSec, 0.5) + padded
+
+            do {
+                try await AudioSlicer.slice(source: bedURL,
+                                            startSec: sliceStart,
+                                            endSec: sliceEnd,
+                                            destination: destURL)
+            } catch {
+                // Non-fatal: log and continue
+                print("[Gather] Slice failed for \(filename): \(error)")
+            }
+        }
+
+        gatherProgress = "Done — \(total) clips saved"
+        gatherProgressFraction = 1.0
+        try? await Task.sleep(nanoseconds: 800_000_000)
+    }
+
+    // MARK: - Gather as Single File
+
+    @MainActor
+    private func gatherAsSingleFile() async {
+        let events = filteredEvents
+        guard !events.isEmpty else { return }
+
+        guard let destURL = await showSavePanelM4A(defaultName: "gathered-clips.m4a") else { return }
+
+        isGathering = true
+        gatherError = nil
+        gatherProgress = "Starting…"
+        gatherProgressFraction = 0
+
+        defer {
+            isGathering = false
+            gatherProgress = ""
+            gatherProgressFraction = 0
+        }
+
+        // Determine cache dir: library-cache on external drive
+        let cacheDir = PreferencesStore.stagingDirectory
+            .appendingPathComponent("library-cache")
+            .appendingPathComponent("gather-temp-\(UUID().uuidString)")
+
+        do {
+            try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        } catch {
+            gatherProgress = "Could not create temp directory: \(error.localizedDescription)"
+            return
+        }
+
+        defer {
+            try? FileManager.default.removeItem(at: cacheDir)
+        }
+
+        // Ensure silence clip
+        let silenceURL = PreferencesStore.stagingDirectory
+            .appendingPathComponent("library-cache")
+            .appendingPathComponent("silence-1s-mono-48k.m4a")
+        do {
+            try await AudioSlicer.ensureSilenceClip(at: silenceURL)
+        } catch {
+            gatherProgress = "Silence generation failed: \(error.localizedDescription)"
+            return
+        }
+
+        let total = events.count
+        var clipURLs: [URL] = []
+        var bedCache: [String: URL] = [:]
+
+        // Sort events chronologically across all sources
+        let sortedEvents = events.sorted { $0.startSec < $1.startSec }
+
+        for (i, event) in sortedEvents.enumerated() {
+            gatherProgress = "Slicing \(i + 1) of \(total) — \(event.label)"
+            gatherProgressFraction = Double(i) / Double(total) * 0.9
+
+            let bedURL: URL
+            if let cached = bedCache[event.sourceSlug] {
+                bedURL = cached
+            } else {
+                let (localBed, isLocal) = index.bedURL(for: event.sourceSlug,
+                                                        category: event.sourceCategory)
+                if isLocal {
+                    bedURL = localBed
+                    bedCache[event.sourceSlug] = localBed
+                } else {
+                    do {
+                        let downloaded = try await index.downloadBed(slug: event.sourceSlug,
+                                                                      category: event.sourceCategory)
+                        bedURL = downloaded
+                        bedCache[event.sourceSlug] = downloaded
+                    } catch {
+                        print("[Gather] Download failed for \(event.sourceSlug): \(error)")
+                        continue
+                    }
+                }
+            }
+
+            let labelSlug = AudioSlicer.slugify(event.label)
+            let clipURL = cacheDir.appendingPathComponent("\(String(format: "%05d", i))__\(labelSlug).m4a")
+
+            let padded = 1.0
+            let sliceStart = max(event.startSec - padded, 0)
+            let sliceEnd = event.startSec + max(event.durationSec, 0.5) + padded
+
+            do {
+                try await AudioSlicer.slice(source: bedURL,
+                                            startSec: sliceStart,
+                                            endSec: sliceEnd,
+                                            destination: clipURL)
+                clipURLs.append(clipURL)
+            } catch {
+                print("[Gather] Slice failed: \(error)")
+            }
+        }
+
+        guard !clipURLs.isEmpty else {
+            gatherProgress = "No clips were sliced successfully."
+            return
+        }
+
+        gatherProgress = "Concatenating \(clipURLs.count) clips…"
+        gatherProgressFraction = 0.92
+
+        do {
+            try await AudioSlicer.concat(clips: clipURLs, silenceURL: silenceURL, destination: destURL)
+        } catch {
+            gatherProgress = "Concat failed: \(error.localizedDescription)"
+            return
+        }
+
+        gatherProgress = "Done — \(clipURLs.count) clips concatenated"
+        gatherProgressFraction = 1.0
+        try? await Task.sleep(nanoseconds: 800_000_000)
+    }
+
+    // MARK: - Panels
+
+    @MainActor
+    private func showOpenPanelForFolder() async -> URL? {
+        await withCheckedContinuation { cont in
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            panel.prompt = "Choose Folder"
+            panel.message = "Select folder to save gathered clips"
+            panel.begin { response in
+                cont.resume(returning: response == .OK ? panel.url : nil)
+            }
+        }
+    }
+
+    @MainActor
+    private func showSavePanelM4A(defaultName: String) async -> URL? {
+        await withCheckedContinuation { cont in
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = defaultName
+            panel.allowedContentTypes = [.mpeg4Audio]
+            panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            panel.begin { response in
+                cont.resume(returning: response == .OK ? panel.url : nil)
+            }
         }
     }
 
