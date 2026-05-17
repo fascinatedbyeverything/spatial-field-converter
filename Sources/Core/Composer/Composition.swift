@@ -9,10 +9,36 @@ public struct Composition: Sendable {
     /// Dolby Atmos master limit on dynamic objects.
     public let atmosObjectBudget: Int = 118
 
+    // Metadata set by Composer.compose — nil when Composition is constructed directly.
+    public let title: String?
+    public let slug: String?
+    public let seed: UInt64?
+    public let templateID: String?
+
+    /// Alias for `bed` — used by Composer tests for clarity.
+    public var bedPlan: BedPlan { bed }
+
+    /// Backward-compatible init for direct construction (e.g. tests).
     public init(bed: BedPlan, objects: [ObjectPlan], durationSec: Double) {
         self.bed = bed
         self.objects = objects
         self.durationSec = durationSec
+        self.title = nil
+        self.slug = nil
+        self.seed = nil
+        self.templateID = nil
+    }
+
+    /// Full init used by Composer.compose.
+    public init(title: String, slug: String, durationSec: Double, seed: UInt64,
+                templateID: String, bedPlan: BedPlan, objects: [ObjectPlan]) {
+        self.title = title
+        self.slug = slug
+        self.durationSec = durationSec
+        self.seed = seed
+        self.templateID = templateID
+        self.bed = bedPlan
+        self.objects = objects
     }
 }
 
