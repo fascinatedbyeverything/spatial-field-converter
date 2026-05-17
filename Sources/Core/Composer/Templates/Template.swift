@@ -11,6 +11,11 @@ public protocol Template: Sendable {
 public enum TemplateRegistry {
     public static let all: [any Template] = [
         GreatestHitsTemplate(),
+        DawnChorusTemplate(),
+        AmbientWashTemplate(),
+        SoloBirdTemplate(),
+        StormTemplate(),
+        CityPulseTemplate(),
     ]
 
     public static func byID(_ id: String) -> (any Template)? {
