@@ -121,28 +121,45 @@ public struct LibraryView: View {
     }
 
     private var refreshFooter: some View {
-        HStack {
-            if let updated = index.lastUpdated {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+
+            if index.isLoading {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Loading catalog…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
+            } else if let updated = index.lastUpdated {
                 Text("Updated \(updated, style: .relative) ago")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            } else if index.isLoading {
-                ProgressView().controlSize(.mini)
-                Text("Loading…")
+                    .padding(.horizontal, 10)
+                    .padding(.top, 4)
+            } else {
+                Text("Not yet loaded")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 4)
             }
-            Spacer()
+
             Button {
                 Task { await index.refresh() }
             } label: {
-                Image(systemName: "arrow.clockwise")
+                Label("Refresh Catalog", systemImage: "arrow.clockwise.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .disabled(index.isLoading)
-            .help("Re-download index + events from R2")
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
         }
-        .padding(8)
     }
 
     // MARK: - Main area
@@ -270,18 +287,26 @@ public struct LibraryView: View {
                     .foregroundStyle(.secondary)
             } else {
                 Image(systemName: "waveform.badge.magnifyingglass")
-                    .font(.largeTitle)
+                    .font(.system(size: 48))
                     .foregroundStyle(.quaternary)
-                Text("No events loaded")
+                    .padding(.bottom, 4)
+                Text("No recordings indexed")
+                    .font(.title3.weight(.semibold))
+                Text("Hit Refresh to load the field-recording catalog from R2.")
                     .font(.callout)
-                Text("Click Refresh to download the catalog from R2.")
-                    .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Refresh Now") {
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 280)
+                Button {
                     Task { await index.refresh() }
+                } label: {
+                    Label("Refresh Catalog", systemImage: "arrow.clockwise.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 8)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .controlSize(.large)
+                .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
