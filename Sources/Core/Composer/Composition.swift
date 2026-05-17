@@ -3,7 +3,7 @@ import Foundation
 /// Final structured output of the Composer. Drives WorldRenderer.
 public struct Composition: Sendable {
     public let bed: BedPlan
-    public let objects: [ObjectPlan]
+    public var objects: [ObjectPlan]
     public let durationSec: Double
 
     /// Dolby Atmos master limit on dynamic objects.
