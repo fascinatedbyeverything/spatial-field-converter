@@ -9,10 +9,38 @@ public struct ContentView: View {
 
     @EnvironmentObject private var libraryIndex: R2CatalogIndex
 
-    public enum Mode: String { case convert, library }
+    public enum Mode: String { case convert, library, compose }
 
     // Default to Library if there are no queued jobs, Convert otherwise.
     @State private var mode: Mode = .library
+
+    // MARK: - Compose-mode state
+    // Lazy-init via @State closures so first launch isn't slowed for Convert-only users.
+
+    @State private var activeSet: SetData = SetData(
+        name: "Untitled Set",
+        slug: "untitled-set",
+        createdAt: Date(),
+        updatedAt: Date(),
+        sources: [],
+        elements: [])
+
+    @State private var setStore: SetStore = {
+        do { return try SetStore() }
+        catch { fatalError("SetStore init: \(error)") }
+    }()
+
+    @State private var composePreviewPlayer: ComposePreviewPlayer = {
+        let cache = PreferencesStore.stagingDirectory
+            .appendingPathComponent("compose-cache", isDirectory: true)
+        do { return try ComposePreviewPlayer(cacheDirectory: cache) }
+        catch { fatalError("ComposePreviewPlayer init: \(error)") }
+    }()
+
+    private var composeCacheDirectory: URL {
+        PreferencesStore.stagingDirectory
+            .appendingPathComponent("compose-render", isDirectory: true)
+    }
 
     public init() {}
 
@@ -22,9 +50,10 @@ public struct ContentView: View {
             Picker("", selection: $mode) {
                 Text("Convert").tag(Mode.convert)
                 Text("Library").tag(Mode.library)
+                Text("Compose").tag(Mode.compose)
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 240)
+            .frame(maxWidth: 360)
             .padding(.horizontal)
             .padding(.top, 10)
             .padding(.bottom, 8)
@@ -36,9 +65,15 @@ public struct ContentView: View {
                 convertView
             case .library:
                 LibraryView()
+            case .compose:
+                ComposeView(
+                    set: $activeSet,
+                    store: setStore,
+                    previewPlayer: composePreviewPlayer,
+                    renderCacheDirectory: composeCacheDirectory)
             }
         }
-        .frame(minWidth: 900, minHeight: 540)
+        .frame(minWidth: 1100, minHeight: 620)
         .onAppear {
             // Auto-switch to Convert when jobs are queued.
             if !pipeline.jobs.isEmpty { mode = .convert }
