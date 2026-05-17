@@ -10,7 +10,7 @@ public protocol Template: Sendable {
 /// Registry of shipping templates. Wire each new template here as it lands.
 public enum TemplateRegistry {
     public static let all: [any Template] = [
-        // populated as templates land
+        GreatestHitsTemplate(),
     ]
 
     public static func byID(_ id: String) -> (any Template)? {
