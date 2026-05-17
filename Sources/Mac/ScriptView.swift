@@ -14,6 +14,9 @@ public struct ScriptView: View {
     let sourceSlug: String
     let sourceCategory: String
 
+    /// Binding to the active Set in ContentView — script events can be added directly.
+    @Binding var activeSet: SetData
+
     @EnvironmentObject private var index: R2CatalogIndex
     @StateObject private var player: PreviewPlayer = PreviewPlayer()
 
@@ -33,9 +36,10 @@ public struct ScriptView: View {
     @State private var isSavingScene: Int? = nil
     @State private var saveError: String? = nil
 
-    public init(sourceSlug: String, sourceCategory: String) {
+    public init(sourceSlug: String, sourceCategory: String, activeSet: Binding<SetData>) {
         self.sourceSlug = sourceSlug
         self.sourceCategory = sourceCategory
+        self._activeSet = activeSet
     }
 
     // MARK: - Body
@@ -294,6 +298,32 @@ public struct ScriptView: View {
             }
 
             Spacer()
+
+            // Add to Set button
+            let tlInput = TimelineEventInput(
+                timeSec: event.timeSec,
+                kind: event.kind,
+                label: event.label,
+                scientific: event.scientific,
+                confidence: event.confidence,
+                durationSec: event.durationSec)
+            let alreadyInSet = LibrarySetBridge.contains(
+                timelineEvent: tlInput,
+                sourceSlug: sourceSlug,
+                in: activeSet)
+            Button {
+                LibrarySetBridge.add(timelineEvent: tlInput,
+                                      sourceSlug: sourceSlug,
+                                      sourceCategory: sourceCategory,
+                                      to: &activeSet)
+            } label: {
+                Image(systemName: alreadyInSet ? "checkmark.circle.fill" : "plus.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(alreadyInSet ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(alreadyInSet)
+            .help(alreadyInSet ? "Already in Set" : "Add to active Set")
 
             // Per-event Save button
             Button {

@@ -64,7 +64,7 @@ public struct ContentView: View {
             case .convert:
                 convertView
             case .library:
-                LibraryView()
+                LibraryView(activeSet: $activeSet, setStore: setStore)
             case .compose:
                 ComposeView(
                     set: $activeSet,

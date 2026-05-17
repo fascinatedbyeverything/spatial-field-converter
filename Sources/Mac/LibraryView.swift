@@ -12,6 +12,10 @@ public struct LibraryView: View {
     @EnvironmentObject private var index: R2CatalogIndex
     @StateObject private var player: PreviewPlayer = PreviewPlayer()
 
+    // Active Set binding — mutations propagate to ContentView → ComposeView.
+    @Binding var activeSet: SetData
+    let setStore: SetStore
+
     // Search / filter state
     @State private var query: String = ""
     @State private var minConfidence: Double = 0.5
@@ -30,7 +34,14 @@ public struct LibraryView: View {
     @State private var gatherProgressFraction: Double = 0.0
     @State private var gatherError: String? = nil
 
-    public init() {}
+    // Active Set picker — local slugs from SetStore
+    @State private var localSetSlugs: [String] = []
+    @State private var isSavingSet: Bool = false
+
+    public init(activeSet: Binding<SetData>, setStore: SetStore) {
+        self._activeSet = activeSet
+        self.setStore = setStore
+    }
 
     // MARK: - Computed
 
@@ -59,7 +70,9 @@ public struct LibraryView: View {
                 // Vertical split: events list on top, script panel beneath
                 VSplitView {
                     mainView
-                    ScriptView(sourceSlug: slug, sourceCategory: source.sourceCategory)
+                    ScriptView(sourceSlug: slug,
+                               sourceCategory: source.sourceCategory,
+                               activeSet: $activeSet)
                         .environmentObject(index)
                         .frame(minHeight: 180)
                 }
@@ -174,6 +187,10 @@ public struct LibraryView: View {
 
     private var mainView: some View {
         VStack(spacing: 0) {
+            activeSetBar
+
+            Divider()
+
             filtersBar
 
             Divider()
@@ -191,6 +208,117 @@ public struct LibraryView: View {
         .sheet(isPresented: $isGathering) {
             gatherProgressSheet
         }
+        .onAppear {
+            localSetSlugs = setStore.listLocalSlugs()
+        }
+    }
+
+    // MARK: - Active Set bar
+
+    private var activeSetBar: some View {
+        HStack(spacing: 10) {
+            Text("Set:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // Picker: in-progress set + any saved local sets
+            Menu {
+                Button {
+                    // Keep current in-progress set (no-op on selection)
+                } label: {
+                    HStack {
+                        Text(activeSet.name)
+                        if localSetSlugs.isEmpty || !localSetSlugs.contains(activeSet.slug) {
+                            Text("(in progress)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .disabled(true) // current item — just shows state
+
+                if !localSetSlugs.isEmpty {
+                    Divider()
+                    ForEach(localSetSlugs, id: \.self) { slug in
+                        Button(slug) {
+                            if let loaded = try? setStore.loadLocal(slug: slug) {
+                                activeSet = loaded
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(activeSet.name)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .frame(maxWidth: 200)
+
+            Button {
+                // Generate a slug and reset
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+                let slug = "set-\(formatter.string(from: Date()))"
+                activeSet = SetData(
+                    name: "Untitled Set",
+                    slug: slug,
+                    createdAt: Date(),
+                    updatedAt: Date(),
+                    sources: [],
+                    elements: [])
+                localSetSlugs = setStore.listLocalSlugs()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("New empty Set")
+
+            Button {
+                isSavingSet = true
+                do {
+                    try setStore.saveLocal(activeSet)
+                    localSetSlugs = setStore.listLocalSlugs()
+                } catch {
+                    // Swallow — UI has no alert here; real failure is auditable via SetStore
+                }
+                isSavingSet = false
+            } label: {
+                if isSavingSet {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Label("Save", systemImage: "square.and.arrow.down")
+                        .font(.caption)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Save active Set locally")
+            .disabled(isSavingSet)
+
+            Spacer()
+
+            // Element count badge
+            if !activeSet.elements.isEmpty {
+                Text("\(activeSet.elements.count) in Set")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.12))
+                    .cornerRadius(4)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(NSColor.controlBackgroundColor))
     }
 
     // MARK: - Gather progress sheet
@@ -302,9 +430,41 @@ public struct LibraryView: View {
             .controlSize(.small)
             .disabled(filteredEvents.isEmpty || isGathering)
             .help("Concatenate all result clips into one .m4a with silence between")
+
+            // "Add all matching → Set" — only shown when a search query is active.
+            if !query.isEmpty {
+                Button {
+                    addAllFilteredToSet()
+                } label: {
+                    Label("Add all → Set", systemImage: "plus.circle.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(filteredEvents.isEmpty)
+                .help("Add all \(filteredEvents.count) visible result(s) to the active Set")
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    // MARK: - Add all filtered events to active Set
+
+    private func addAllFilteredToSet() {
+        let inputs = filteredEvents.map { event in
+            IndexedEventInput(
+                sourceSlug: event.sourceSlug,
+                sourceCategory: event.sourceCategory,
+                startSec: event.startSec,
+                durationSec: event.durationSec,
+                label: event.label,
+                scientific: event.scientific,
+                confidence: event.confidence)
+        }
+        LibrarySetBridge.addAll(indexedEvents: inputs,
+                                 recordingCategory: inputs.first?.sourceCategory ?? "",
+                                 to: &activeSet)
     }
 
     @ViewBuilder
@@ -367,6 +527,14 @@ public struct LibraryView: View {
 
     private var resultsList: some View {
         List(filteredEvents) { event in
+            let input = IndexedEventInput(
+                sourceSlug: event.sourceSlug,
+                sourceCategory: event.sourceCategory,
+                startSec: event.startSec,
+                durationSec: event.durationSec,
+                label: event.label,
+                scientific: event.scientific,
+                confidence: event.confidence)
             EventRow(
                 event: event,
                 isPlaying: playingEventID == event.id,
@@ -374,11 +542,16 @@ public struct LibraryView: View {
                 downloadError: downloadErrors[event.id],
                 isPlayingClip: playingClipEventID == event.id,
                 isDownloadingClip: downloadingClip[event.id] == true,
-                clipError: clipErrors[event.id]
+                clipError: clipErrors[event.id],
+                isInSet: LibrarySetBridge.contains(indexedEvent: input, in: activeSet)
             ) {
                 Task { await togglePlay(event) }
             } onPlayClip: {
                 Task { await togglePlayClip(event) }
+            } onAddToSet: {
+                LibrarySetBridge.add(indexedEvent: input,
+                                      from: event.sourceCategory,
+                                      to: &activeSet)
             }
             .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
         }
@@ -727,8 +900,10 @@ private struct EventRow: View {
     let isPlayingClip: Bool
     let isDownloadingClip: Bool
     let clipError: String?
+    let isInSet: Bool
     let onPlay: () -> Void
     let onPlayClip: () -> Void
+    let onAddToSet: () -> Void
 
     // Category-derived: species events are "birdnet" or similar label-driven;
     // apple-soundanalysis events tend to be category-level labels.
@@ -819,6 +994,16 @@ private struct EventRow: View {
             }
 
             Spacer()
+
+            // Add to Set button
+            Button(action: onAddToSet) {
+                Image(systemName: isInSet ? "checkmark.circle.fill" : "plus.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(isInSet ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(isInSet ? "Already in Set" : "Add to active Set")
+            .disabled(isInSet)
         }
         .padding(.vertical, 2)
         .background(isPlaying ? Color.accentColor.opacity(0.08) : Color.clear)
