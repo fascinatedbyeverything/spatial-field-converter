@@ -36,6 +36,19 @@ public final class R2Uploader {
 
     public init() {}
 
+    /// Environment dictionary for aws CLI subprocesses — exposes the R2 credentials
+    /// so WorldRenderer (and any future tool that shells out to aws) can share the
+    /// same source-of-truth without duplicating credential values.
+    public static var awsEnvironment: [String: String] {
+        let instance = R2Uploader()
+        return [
+            "AWS_ACCESS_KEY_ID": instance.accessKey,
+            "AWS_SECRET_ACCESS_KEY": instance.secretKey,
+            "AWS_DEFAULT_REGION": instance.region,
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        ]
+    }
+
     /// Upload a folder full of files (recursively) to s3://<bucket>/<prefix>.
     /// Returns the prefix on success.
     public func uploadFolder(localFolder: URL, r2Prefix: String) async throws -> R2UploadResult {
