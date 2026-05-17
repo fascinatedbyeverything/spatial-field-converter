@@ -338,6 +338,7 @@ public final class R2CatalogIndex: ObservableObject {
             public let endSec: Double
             public let label: String
             public let dominantCategories: [String]
+            public let speciesInScene: [String]
         }
         public struct Event: Sendable {
             public let timeSec: Double
@@ -424,26 +425,49 @@ public final class R2CatalogIndex: ObservableObject {
         var scenes: [TimelineData.Scene] = []
         if let scenesArr = root["scenes"] as? [[String: Any]] {
             for s in scenesArr {
-                let startSec = s["startSec"] as? Double ?? s["start"] as? Double ?? 0
-                let endSec   = s["endSec"]   as? Double ?? s["end"]   as? Double ?? 0
-                let label    = s["label"] as? String ?? ""
-                let cats     = s["dominantCategories"] as? [String] ?? []
+                // Accept both camelCase (legacy) and snake_case (analyzer output)
+                let startSec = s["startSec"] as? Double
+                    ?? s["start_sec"] as? Double
+                    ?? s["start"] as? Double
+                    ?? 0.0
+                let endSec = s["endSec"] as? Double
+                    ?? s["end_sec"] as? Double
+                    ?? s["end"] as? Double
+                    ?? 0.0
+                let label = s["label"] as? String ?? ""
+                let cats = s["dominantCategories"] as? [String]
+                    ?? s["dominant_categories"] as? [String]
+                    ?? []
+                let species = s["speciesInScene"] as? [String]
+                    ?? s["species_in_scene"] as? [String]
+                    ?? []
                 scenes.append(TimelineData.Scene(startSec: startSec, endSec: endSec,
-                                                  label: label, dominantCategories: cats))
+                                                  label: label, dominantCategories: cats,
+                                                  speciesInScene: species))
             }
         }
 
         var events: [TimelineData.Event] = []
         let eventsArr = (root["events"] as? [[String: Any]]) ?? []
         for e in eventsArr {
-            let timeSec     = e["timeSec"] as? Double ?? e["startSec"] as? Double ?? 0
-            let timeDisplay = e["timeDisplay"] as? String ?? formatTimeline(timeSec)
-            let kind        = e["kind"] as? String ?? (e["scientific"] != nil ? "species" : "category")
-            let label       = e["label"] as? String ?? ""
-            let scientific  = e["scientific"] as? String
-            let source      = e["source"] as? String ?? ""
-            let confidence  = e["confidence"] as? Double ?? 1.0
-            let duration    = e["durationSec"] as? Double ?? e["duration"] as? Double ?? 0
+            // Accept both camelCase (legacy) and snake_case (analyzer output)
+            let timeSec = e["timeSec"] as? Double
+                ?? e["time_sec"] as? Double
+                ?? e["startSec"] as? Double
+                ?? e["start_sec"] as? Double
+                ?? 0.0
+            let timeDisplay = e["timeDisplay"] as? String
+                ?? e["time_display"] as? String
+                ?? formatTimeline(timeSec)
+            let kind = e["kind"] as? String ?? (e["scientific"] != nil ? "species" : "category")
+            let label = e["label"] as? String ?? ""
+            let scientific = e["scientific"] as? String
+            let source = e["source"] as? String ?? ""
+            let confidence = e["confidence"] as? Double ?? 1.0
+            let duration = e["durationSec"] as? Double
+                ?? e["duration_sec"] as? Double
+                ?? e["duration"] as? Double
+                ?? 0.0
             events.append(TimelineData.Event(timeSec: timeSec, timeDisplay: timeDisplay,
                                               kind: kind, label: label, scientific: scientific,
                                               source: source, confidence: confidence,
