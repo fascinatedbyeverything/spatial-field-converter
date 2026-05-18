@@ -199,7 +199,7 @@ public struct LibraryView: View {
                 errorBanner(err)
             }
 
-            if index.allEvents.isEmpty && !index.isLoading {
+            if filteredEvents.isEmpty && !index.isLoading {
                 emptyState
             } else {
                 resultsList
@@ -488,16 +488,7 @@ public struct LibraryView: View {
                 Text("Downloading catalog from R2…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            } else if !query.isEmpty || minConfidence > 0 {
-                Image(systemName: "magnifyingglass")
-                    .font(.largeTitle)
-                    .foregroundStyle(.quaternary)
-                Text("No results")
-                    .font(.callout)
-                Text("Try a different search or lower the confidence threshold.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
+            } else if index.allEvents.isEmpty {
                 Image(systemName: "waveform.badge.magnifyingglass")
                     .font(.system(size: 48))
                     .foregroundStyle(.quaternary)
@@ -519,6 +510,15 @@ public struct LibraryView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .padding(.top, 4)
+            } else {
+                Image(systemName: "magnifyingglass")
+                    .font(.largeTitle)
+                    .foregroundStyle(.quaternary)
+                Text("No results")
+                    .font(.callout)
+                Text("Try a different search or lower the confidence threshold.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
