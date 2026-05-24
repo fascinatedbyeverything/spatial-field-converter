@@ -28,6 +28,11 @@ public struct LibraryView: View {
     @State private var downloading: [String: Bool] = [:]
     @State private var downloadErrors: [UUID: String] = [:]
 
+    // Bed-level preview state (selected source with no events)
+    @State private var bedPreviewPlayingSlug: String? = nil
+    @State private var bedPreviewDownloadingSlug: String? = nil
+    @State private var bedPreviewError: String? = nil
+
     // Gather state
     @State private var isGathering: Bool = false
     @State private var gatherProgress: String = ""
@@ -510,6 +515,11 @@ public struct LibraryView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .padding(.top, 4)
+            } else if let slug = selectedSourceSlug,
+                      let source = sourceOptions.first(where: { $0.id == slug }) {
+                // Source is selected but has no events yet (analyzer hasn't run).
+                // Offer a bed.m4a preview so the recording is at least audible.
+                sourcePreviewState(slug: slug, category: source.sourceCategory)
             } else {
                 Image(systemName: "magnifyingglass")
                     .font(.largeTitle)
@@ -523,6 +533,97 @@ public struct LibraryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+
+    @ViewBuilder
+    private func sourcePreviewState(slug: String, category: String) -> some View {
+        Image(systemName: "waveform.circle")
+            .font(.system(size: 48))
+            .foregroundStyle(.tertiary)
+            .padding(.bottom, 4)
+        Text(slug)
+            .font(.system(size: 13, weight: .semibold).monospaced())
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 420)
+        Text("No analyzer events yet — preview the 7.1.2 bed below.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+        Text("Plays head-tracked spatial on AirPods Pro / Max with system Spatial Audio enabled — stereo downmix otherwise.")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 420)
+
+        let isPlayingThis = bedPreviewPlayingSlug == slug
+        let isDownloadingThis = bedPreviewDownloadingSlug == slug
+
+        Button {
+            if isPlayingThis {
+                player.stop()
+                bedPreviewPlayingSlug = nil
+                return
+            }
+            bedPreviewError = nil
+            let (localURL, isLocal) = index.bedURL(for: slug, category: category)
+            if isLocal {
+                playBedPreview(localURL, slug: slug)
+            } else {
+                bedPreviewDownloadingSlug = slug
+                Task {
+                    do {
+                        let downloaded = try await index.downloadBed(slug: slug, category: category)
+                        await MainActor.run {
+                            bedPreviewDownloadingSlug = nil
+                            playBedPreview(downloaded, slug: slug)
+                        }
+                    } catch {
+                        await MainActor.run {
+                            bedPreviewDownloadingSlug = nil
+                            bedPreviewError = "Could not download bed.m4a: \(error.localizedDescription)"
+                        }
+                    }
+                }
+            }
+        } label: {
+            if isDownloadingThis {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Downloading bed.m4a…")
+                }
+                .padding(.horizontal, 8)
+            } else if isPlayingThis {
+                Label("Stop", systemImage: "stop.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .padding(.horizontal, 8)
+            } else {
+                Label("Play Spatial Preview", systemImage: "airpodspro")
+                    .font(.system(size: 14, weight: .semibold))
+                    .padding(.horizontal, 8)
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(isDownloadingThis)
+        .padding(.top, 4)
+
+        if let err = bedPreviewError {
+            Text(err)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+        }
+    }
+
+    private func playBedPreview(_ url: URL, slug: String) {
+        do {
+            try player.play(url, startAt: 0, autoStopAfter: nil)
+            bedPreviewPlayingSlug = slug
+        } catch {
+            bedPreviewError = "Playback failed: \(error.localizedDescription)"
+        }
     }
 
     private var resultsList: some View {

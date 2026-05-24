@@ -102,8 +102,8 @@ public final class ADMBWFWriter {
         }
 
         // Patch axml payload in-place.
-        // Layout: RIFF(12) + fmt(8+16) + axml_id+size(8) = offset 44 for axml payload start.
-        let axmlPayloadOffset: UInt64 = 12 + 24 + 8
+        // Layout: RIFF(12) + JUNK/ds64(36) + fmt(8+16) + axml_id+size(8) = offset 80.
+        let axmlPayloadOffset: UInt64 = 12 + 36 + 24 + 8
         try handle.seek(toOffset: axmlPayloadOffset)
         handle.write(newAxml)
 
@@ -113,24 +113,59 @@ public final class ADMBWFWriter {
         let chnaSize = chnaPayload.count
         let chnaPad = chnaSize % 2
 
-        // Patch RIFF size (bytes 4..7).
-        let riffPayloadSize = 4                             // "WAVE"
-            + 8 + 16                                        // fmt chunk
-            + 8 + axmlSize + axmlPad                        // axml chunk
-            + 8 + chnaSize + chnaPad                        // chna chunk
-            + 8 + dataSize                                  // data chunk
+        // Total RIFF payload (excludes leading "RIFF" id + size = 8 bytes).
+        // "WAVE" + JUNK/ds64 + fmt + axml + chna + data.
+        let riffPayloadSize: UInt64 = 4                                   // "WAVE"
+            + 36                                                          // JUNK/ds64 chunk
+            + 8 + 16                                                      // fmt chunk
+            + 8 + UInt64(axmlSize) + UInt64(axmlPad)                      // axml chunk
+            + 8 + UInt64(chnaSize) + UInt64(chnaPad)                      // chna chunk
+            + 8 + UInt64(dataSize)                                        // data chunk
 
-        try handle.seek(toOffset: 4)
-        handle.write(UInt32(riffPayloadSize).leData)
+        // EBU Tech 3306: legacy 32-bit size fields can only express up to 0xFFFFFFFF.
+        // When the payload would overflow, switch the file to RF64 and put the real
+        // 64-bit sizes in the ds64 chunk (the JUNK placeholder we reserved).
+        let needsRF64 = riffPayloadSize > UInt64(UInt32.max)
+            || UInt64(dataSize) > UInt64(UInt32.max)
 
-        // Patch data chunk size.
-        // data chunk id+size field starts after: RIFF(12) + fmt(24) + axml(8+axmlSize+axmlPad) + chna(8+chnaSize+chnaPad) + "data"(4)
-        let dataSizeOffset: UInt64 = 12 + 24
+        if needsRF64 {
+            // 1. Rewrite RIFF magic → "RF64".
+            try handle.seek(toOffset: 0)
+            handle.write("RF64".data(using: .ascii)!)
+
+            // 2. Set legacy RIFF size field to sentinel 0xFFFFFFFF (bytes 4..7).
+            try handle.seek(toOffset: 4)
+            handle.write(UInt32.max.leData)
+
+            // 3. Replace the JUNK placeholder with a ds64 chunk (same 36-byte footprint).
+            //    Layout: "ds64"(4) + size=28(4) + bwfSize(8) + dataSize(8) + sampleCount(8) + tableLength=0(4).
+            let sampleCount = UInt64(framesWritten)
+            try handle.seek(toOffset: 12)
+            handle.write("ds64".data(using: .ascii)!)
+            handle.write(UInt32(28).leData)
+            handle.write(riffPayloadSize.leData)            // bwfSize
+            handle.write(UInt64(dataSize).leData)           // dataSize (real)
+            handle.write(sampleCount.leData)                // sampleCount
+            handle.write(UInt32(0).leData)                  // tableLength
+        } else {
+            // Plain RIFF: write 32-bit RIFF payload size, leave JUNK chunk inert.
+            try handle.seek(toOffset: 4)
+            handle.write(UInt32(riffPayloadSize).leData)
+        }
+
+        // Patch data chunk size field.
+        // data id+size lives at: RIFF(12) + JUNK/ds64(36) + fmt(24) + axml(8+axmlSize+axmlPad)
+        //   + chna(8+chnaSize+chnaPad) + "data"(4)
+        let dataSizeOffset: UInt64 = 12 + 36 + 24
             + 8 + UInt64(axmlSize) + UInt64(axmlPad)
             + 8 + UInt64(chnaSize) + UInt64(chnaPad)
             + 4   // skip past "data" id, land on size field
         try handle.seek(toOffset: dataSizeOffset)
-        handle.write(UInt32(dataSize).leData)
+        if needsRF64 {
+            handle.write(UInt32.max.leData)                 // sentinel; real size in ds64
+        } else {
+            handle.write(UInt32(dataSize).leData)
+        }
 
         try handle.close()
     }
@@ -140,10 +175,18 @@ public final class ADMBWFWriter {
     private func writePlaceholderHeader() throws {
         var data = Data()
 
-        // RIFF header
+        // RIFF header (rewritten to "RF64" at finalize if file exceeds 4 GiB)
         data.append("RIFF".data(using: .ascii)!)
         data.append(UInt32(0).leData)           // patched in finalize
         data.append("WAVE".data(using: .ascii)!)
+
+        // JUNK placeholder for ds64 chunk (always 36 bytes: 4 id + 4 size + 28 payload).
+        // EBU Tech 3306: if file finalises >4 GiB we rewrite id to "ds64" and fill the
+        // 28-byte payload. Otherwise the JUNK chunk is inert per RIFF spec and the
+        // file is a fully valid plain WAV.
+        data.append("JUNK".data(using: .ascii)!)
+        data.append(UInt32(28).leData)
+        data.append(Data(count: 28))
 
         // fmt chunk (16-byte payload, PCM = format tag 1)
         let sr = session.sampleRate.rawValue

@@ -11,8 +11,10 @@ public struct ContentView: View {
 
     public enum Mode: String { case convert, library, compose }
 
-    // Default to Library if there are no queued jobs, Convert otherwise.
-    @State private var mode: Mode = .library
+    // Default to Convert — the H8 / VRH-8 ingest drop target is the primary
+    // workflow. Library + Compose are downstream and reachable via the
+    // segmented picker at the top of the window.
+    @State private var mode: Mode = .convert
 
     // MARK: - Compose-mode state
     // Lazy-init via @State closures so first launch isn't slowed for Convert-only users.
@@ -46,15 +48,20 @@ public struct ContentView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Mode switcher
-            Picker("", selection: $mode) {
-                Text("Convert").tag(Mode.convert)
-                Text("Library").tag(Mode.library)
-                Text("Compose").tag(Mode.compose)
+            // Mode switcher — centered, fixed width, label hidden so the
+            // segmented control renders reliably under the title bar.
+            HStack {
+                Spacer()
+                Picker("Mode", selection: $mode) {
+                    Text("Convert").tag(Mode.convert)
+                    Text("Library").tag(Mode.library)
+                    Text("Compose").tag(Mode.compose)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 360)
+                Spacer()
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 360)
-            .padding(.horizontal)
             .padding(.top, 10)
             .padding(.bottom, 8)
 

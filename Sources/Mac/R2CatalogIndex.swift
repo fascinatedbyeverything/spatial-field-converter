@@ -122,85 +122,57 @@ public final class R2CatalogIndex: ObservableObject {
                 throw R2CatalogIndexError.badJSON("samples/index.json", NSError(domain: "R2CatalogIndex", code: 0))
             }
 
-            // Build SourceSummary from the index.
-            // The index has a "sources" array with { slug, duration_sec, species_count, sample_count, ... }
-            // Note: "category" is NOT present in the analyzer-produced index — we use the discovered map.
+            // Build SourceSummary from the R2 listing (source of truth for which
+            // bundles exist), enriched by samples/index.json if the analyzer
+            // metadata is present. Slugs without analyzer metadata still appear
+            // — they just show zero events / unknown duration until the analyzer
+            // pass runs on them.
             var newSources: [SourceSummary] = []
             var newEvents: [IndexedEvent] = []
 
+            // Optional metadata enrichment from samples/index.json
             let sourcesArray = (indexRoot["sources"] as? [[String: Any]])
                 ?? (indexRoot["recordings"] as? [[String: Any]])
                 ?? []
+            var indexMeta: [String: [String: Any]] = [:]
+            for d in sourcesArray {
+                if let slug = d["slug"] as? String { indexMeta[slug] = d }
+            }
 
-            for sourceDict in sourcesArray {
-                guard let slug = sourceDict["slug"] as? String else { continue }
-
-                // Look up category from the R2 listing. Fall back to "zoom-bounces" if somehow absent.
-                let category = slugCategoryMap[slug]
-                    ?? sourceDict["category"] as? String
-                    ?? "zoom-bounces"
-
-                // Support both camelCase and snake_case field names
-                let durationSec = sourceDict["durationSec"] as? Double
-                    ?? sourceDict["duration_sec"] as? Double
-                    ?? sourceDict["duration"] as? Double
+            // Primary iteration: every slug discovered in R2
+            for (slug, category) in slugCategoryMap.sorted(by: { $0.key < $1.key }) {
+                let meta = indexMeta[slug]
+                let durationSec = meta?["durationSec"] as? Double
+                    ?? meta?["duration_sec"] as? Double
+                    ?? meta?["duration"] as? Double
                     ?? 0.0
-                let speciesCount = sourceDict["speciesCount"] as? Int
-                    ?? sourceDict["species_count"] as? Int
+                let speciesCount = meta?["speciesCount"] as? Int
+                    ?? meta?["species_count"] as? Int
                     ?? 0
-                let sampleCount = sourceDict["sampleCount"] as? Int
-                    ?? sourceDict["sample_count"] as? Int
+                let sampleCount = meta?["sampleCount"] as? Int
+                    ?? meta?["sample_count"] as? Int
                     ?? 0
 
-                let summary = SourceSummary(
+                // Source is added regardless of whether events.json exists.
+                newSources.append(SourceSummary(
                     id: slug,
                     sourceCategory: category,
                     durationSec: durationSec,
                     speciesCount: speciesCount,
                     sampleCount: sampleCount
-                )
-                newSources.append(summary)
+                ))
 
-                // 4. Download events.json for this source
-                // Key pattern: stems/spatial-mix/field-recording/<category>/<slug>/events.json
+                // Best-effort events.json download — missing is fine.
                 let eventsKey = "stems/spatial-mix/field-recording/\(category)/\(slug)/events.json"
                 let localEvents = cacheDirectory
                     .appendingPathComponent(slug)
                     .appendingPathComponent("events.json")
-
                 do {
                     try await downloadR2Key(eventsKey, to: localEvents)
                     let events = try parseEventsJSON(at: localEvents, slug: slug, category: category)
                     newEvents.append(contentsOf: events)
                 } catch {
-                    // Non-fatal: if events.json is missing for a source, skip it
-                    print("[R2CatalogIndex] Could not load events for \(slug): \(error)")
-                }
-            }
-
-            // If the index sources array was empty (e.g. older index format or missing entries),
-            // fall back to using every slug the R2 listing discovered.
-            if newSources.isEmpty && !slugCategoryMap.isEmpty {
-                for (slug, category) in slugCategoryMap.sorted(by: { $0.key < $1.key }) {
-                    let eventsKey = "stems/spatial-mix/field-recording/\(category)/\(slug)/events.json"
-                    let localEvents = cacheDirectory
-                        .appendingPathComponent(slug)
-                        .appendingPathComponent("events.json")
-                    do {
-                        try await downloadR2Key(eventsKey, to: localEvents)
-                        let events = try parseEventsJSON(at: localEvents, slug: slug, category: category)
-                        newEvents.append(contentsOf: events)
-                        let summary = SourceSummary(
-                            id: slug,
-                            sourceCategory: category,
-                            durationSec: 0,
-                            speciesCount: Set(events.map { $0.label }).count,
-                            sampleCount: events.count
-                        )
-                        newSources.append(summary)
-                    } catch {
-                        print("[R2CatalogIndex] Could not load events for \(slug): \(error)")
-                    }
+                    print("[R2CatalogIndex] No events.json for \(slug) (analyzer not run yet): \(error.localizedDescription)")
                 }
             }
 
@@ -275,9 +247,11 @@ public final class R2CatalogIndex: ObservableObject {
 
         var map: [String: String] = [:]
         for obj in contents {
+            // Discover slugs by manifest.json — every converted bundle has one.
+            // events.json (analyzer output) is optional and may not exist yet.
             guard let key = obj["Key"] as? String,
-                  key.hasSuffix("/events.json") else { continue }
-            // stems/spatial-mix/field-recording/<category>/<slug>/events.json
+                  key.hasSuffix("/manifest.json") else { continue }
+            // stems/spatial-mix/field-recording/<category>/<slug>/manifest.json
             let parts = key.split(separator: "/", omittingEmptySubsequences: false)
             guard parts.count == 6 else { continue }
             let category = String(parts[3])
