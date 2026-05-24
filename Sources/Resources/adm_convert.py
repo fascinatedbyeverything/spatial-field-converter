@@ -245,30 +245,46 @@ def probe_audio(wav_path):
 
 
 def extract_stems(wav_path, output_dir, channel_count):
-    """Extract bed (stereo) and individual object stems as M4A."""
+    """Extract bed (stereo) + N object stems as M4A in a SINGLE ffmpeg pass.
+
+    Reads the input WAV exactly once and runs all AAC encoders in parallel
+    inside ffmpeg via -filter_complex multi-output. For an 8 GB input with
+    8 objects, this turns ~72 GB of redundant disk reads into ~8 GB.
+    """
     bed_channels = min(2, channel_count)
     object_count = max(0, channel_count - bed_channels)
 
-    # Extract stereo bed
-    print(f"  Extracting bed (channels 0-1)...")
-    subprocess.run([
-        'ffmpeg', '-nostdin', '-y', '-i', wav_path,
-        '-filter_complex', 'pan=stereo|c0=c0|c1=c1',
-        '-c:a', 'aac', '-b:a', '256k', '-ar', '48000',
-        os.path.join(output_dir, 'bed.m4a')
-    ], capture_output=True)
-
-    # Extract each object channel
+    # Build -filter_complex string: one pan per output, labeled [bed], [o1]..[oN].
+    filter_parts = ['[0:a]pan=stereo|c0=c0|c1=c1[bed]']
     for i in range(object_count):
         ch_idx = bed_channels + i
-        obj_name = f'obj-{i+1:02d}.m4a'
-        print(f"  Extracting object {i+1}/{object_count} (channel {ch_idx})...")
-        subprocess.run([
-            'ffmpeg', '-nostdin', '-y', '-i', wav_path,
-            '-filter_complex', f'pan=mono|c0=c{ch_idx}',
-            '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
-            os.path.join(output_dir, obj_name)
-        ], capture_output=True)
+        filter_parts.append(f'[0:a]pan=mono|c0=c{ch_idx}[o{i+1}]')
+    filter_complex = ';'.join(filter_parts)
+
+    # Build the ffmpeg command with one -map per labeled output.
+    cmd = [
+        'ffmpeg', '-nostdin', '-y',
+        '-i', wav_path,
+        '-filter_complex', filter_complex,
+        '-map', '[bed]', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000',
+        os.path.join(output_dir, 'bed.m4a'),
+    ]
+    for i in range(object_count):
+        cmd.extend([
+            '-map', f'[o{i+1}]', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
+            os.path.join(output_dir, f'obj-{i+1:02d}.m4a'),
+        ])
+
+    print(f"  Splitting bed + {object_count} objects in a single ffmpeg pass...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        # Surface failure so the Swift side can mark the job as .failed.
+        tail = (result.stderr or '').splitlines()[-20:]
+        raise RuntimeError(
+            f"ffmpeg single-pass split failed (exit {result.returncode}):\n"
+            + '\n'.join(tail)
+        )
+    print(f"  Wrote bed.m4a + obj-01..{object_count:02d}.m4a")
 
     return object_count
 
