@@ -51,7 +51,14 @@ public struct ScriptView: View {
             if isLoading {
                 loadingView
             } else if let err = loadError {
-                errorView(err)
+                // 404 / "does not exist" = analyzer hasn't run on this slug yet
+                // (converter only writes manifest.json + bed.m4a + obj-NN.m4a).
+                // Surface that as a friendly empty state, not an alarming error.
+                if errorIsMissingTimeline(err) {
+                    awaitingAnalyzerView
+                } else {
+                    errorView(err)
+                }
             } else if let tl = timeline {
                 scriptContent(tl)
             } else {
@@ -434,6 +441,32 @@ public struct ScriptView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var awaitingAnalyzerView: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "waveform.badge.magnifyingglass")
+                .font(.system(size: 36))
+                .foregroundStyle(.tertiary)
+            Text("No script yet")
+                .font(.callout.weight(.semibold))
+            Text("Analyzer has not run on this recording yet.\nbed.m4a is playable from the source preview above.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// True if the underlying download error indicates the timeline.json simply
+    /// doesn't exist for this slug (the analyzer pass hasn't run), as opposed to
+    /// a real network/auth/parse failure.
+    private func errorIsMissingTimeline(_ err: String) -> Bool {
+        let lower = err.lowercased()
+        return lower.contains("does not exist")
+            || lower.contains("(404)")
+            || lower.contains("nosuchkey")
     }
 
     // MARK: - Playback

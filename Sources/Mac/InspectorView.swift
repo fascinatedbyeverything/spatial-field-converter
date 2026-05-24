@@ -158,6 +158,11 @@ public struct InspectorView: View {
                 ProgressView().controlSize(.mini)
                 Text("converting…").font(.caption).foregroundStyle(.blue)
             }
+        case .encoding:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("encoding m4a…").font(.caption).foregroundStyle(.blue)
+            }
         case .uploading:
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)

@@ -22,6 +22,7 @@ public final class ConversionPipeline: ObservableObject {
         case pending
         case alreadyConverted
         case converting
+        case encoding
         case uploading
         case done
         case failed
@@ -125,7 +126,10 @@ public final class ConversionPipeline: ObservableObject {
         do {
             let conv = try await job.run()
             jobs[index].slug = conv.slug
-            jobs[index].status = .uploading
+            // Encoding phase: ffmpeg splits the BWF master into 9 m4a files.
+            // Slow on long recordings (sequential ffmpeg per stream). Surface
+            // this distinctly from the actual R2 upload that follows.
+            jobs[index].status = .encoding
 
             // Run adm_convert.py to split ADM BWF into bed.m4a + obj-NN.m4a + manifest.json
             let stagingForSlug = staging
@@ -137,6 +141,7 @@ public final class ConversionPipeline: ObservableObject {
                 outputDirectory: stagingForSlug
             )
 
+            jobs[index].status = .uploading
             // Upload to R2. Sub-prefix is mic-type-specific so conversions from different
             // sources are grouped distinctly in the bucket.
             let r2Prefix = "stems/spatial-mix/\(r2Category)/\(conv.slug)/"
