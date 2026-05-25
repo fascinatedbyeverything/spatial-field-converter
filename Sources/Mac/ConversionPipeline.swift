@@ -72,11 +72,38 @@ public final class ConversionPipeline: ObservableObject {
         jobs.removeAll()
     }
 
+    /// Maximum number of ConversionJob.run() invocations to keep in flight at once.
+    /// 3 keeps M3/M4 perf-cores busy (CPU-bound matmul + ffmpeg encode) without
+    /// saturating disk on parallel BWF intermediate writes. Override at runtime:
+    ///   defaults write com.fascinatedbyeverything.spatialfieldconverter batchConcurrency -int <N>
+    public static var batchConcurrency: Int {
+        let raw = UserDefaults.standard.integer(forKey: "batchConcurrency")
+        return raw > 0 ? raw : 3
+    }
+
     public func runAll() async {
         isRunning = true
         defer { isRunning = false }
-        for index in jobs.indices where jobs[index].enabled && jobs[index].status == .pending {
-            await runJob(at: index)
+
+        let pending = jobs.indices.filter {
+            jobs[$0].enabled && jobs[$0].status == .pending
+        }
+        let concurrency = max(1, Self.batchConcurrency)
+
+        // Sliding-window concurrency: prime with `concurrency` jobs, refill as
+        // each finishes. Each job mutates only its own jobs[idx] slot — no
+        // cross-job state races.
+        await withTaskGroup(of: Void.self) { group in
+            var iter = pending.makeIterator()
+            for _ in 0..<concurrency {
+                guard let next = iter.next() else { break }
+                group.addTask { [weak self] in await self?.runJob(at: next) }
+            }
+            while await group.next() != nil {
+                if let next = iter.next() {
+                    group.addTask { [weak self] in await self?.runJob(at: next) }
+                }
+            }
         }
     }
 
@@ -160,6 +187,11 @@ public final class ConversionPipeline: ObservableObject {
                 title: snapshot.title,
                 durationSec: durationSec
             )
+
+            // Upload succeeded — the BWF master intermediate at staging root
+            // is no longer needed (regenerable from source on demand). Delete
+            // to stop ~2.5×-source-size files piling up indefinitely.
+            try? FileManager.default.removeItem(at: conv.admBwfURL)
 
             jobs[index].status = .done
         } catch {

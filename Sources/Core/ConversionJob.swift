@@ -57,7 +57,11 @@ public final class ConversionJob: @unchecked Sendable {
     public let programmeName: String
     public let converterVersion: String
 
-    private let chunkFrames: Int = 4800   // 100 ms at 48 kHz
+    // 1 second at 48 kHz. Was 4800 (100 ms) in v1.1.0–v1.1.10 — 10× more
+    // per-chunk overhead (Swift call + buffer alloc + file handle write)
+    // than necessary. 48000 × 16 channels × 4 bytes = 3 MB peak buffer,
+    // safely small relative to system memory.
+    private let chunkFrames: Int = 48000
 
     public init(
         sourceFile: URL,

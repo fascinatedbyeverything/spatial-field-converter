@@ -245,48 +245,60 @@ def probe_audio(wav_path):
 
 
 def extract_stems(wav_path, output_dir, channel_count):
-    """Extract bed (stereo) + N object stems as M4A in a SINGLE ffmpeg pass.
+    """Encode the whole BWF master as ONE multichannel bed.m4a.
 
-    Reads the input WAV exactly once and runs all AAC encoders in parallel
-    inside ffmpeg via -filter_complex multi-output. For an 8 GB input with
-    8 objects, this turns ~72 GB of redundant disk reads into ~8 GB.
+    Ambisonic field recordings have no real objects — they're a 4-channel
+    sound field decoded into a 7.1.2 bed. Splitting the bed channels into
+    fake mono "obj-NN.m4a" files (with all-zero position metadata) is the
+    architectural bug that bloated R2 storage and tripled ffmpeg encode
+    work. Bed-only is the right output for this source class.
+
+    AAC supports up to 7.1 (8 channels) natively. For 10-channel 7.1.2
+    inputs we drop the two top-front height channels (Ltf, Rtf) to stay
+    in 7.1 AAC — that's the channel layout AirPods Pro/Max + system
+    Spatial Audio engage HRTF binauralization on. True heights need
+    AC-4 IMS, deferred.
+
+    Returns 0 (no objects written) — kept as int for caller compatibility.
     """
-    bed_channels = min(2, channel_count)
-    object_count = max(0, channel_count - bed_channels)
+    out_path = os.path.join(output_dir, 'bed.m4a')
 
-    # Build -filter_complex string: one pan per output, labeled [bed], [o1]..[oN].
-    filter_parts = ['[0:a]pan=stereo|c0=c0|c1=c1[bed]']
-    for i in range(object_count):
-        ch_idx = bed_channels + i
-        filter_parts.append(f'[0:a]pan=mono|c0=c{ch_idx}[o{i+1}]')
-    filter_complex = ';'.join(filter_parts)
+    if channel_count <= 8:
+        # ≤7.1 — pass through; ffmpeg infers the channel layout from the input.
+        cmd = [
+            'ffmpeg', '-nostdin', '-y', '-i', wav_path,
+            '-c:a', 'aac', '-b:a', '384k', '-ar', '48000',
+            out_path,
+        ]
+        print(f"  Encoding {channel_count}-ch bed.m4a (single ffmpeg pass)...")
+    else:
+        # 7.1.2 (10ch) or higher — fold to 7.1 (8ch), dropping heights.
+        # Pan filter maps channels 0..7 explicitly; ffmpeg then tags the
+        # output as 7.1 (back) which is what Apple's AAC decoder + Spatial
+        # Audio expect.
+        pan = ('pan=7.1|'
+               'FL=c0|FR=c1|FC=c2|LFE=c3|'
+               'BL=c4|BR=c5|SL=c6|SR=c7')
+        cmd = [
+            'ffmpeg', '-nostdin', '-y', '-i', wav_path,
+            '-filter_complex', f'[0:a]{pan}[bed]',
+            '-map', '[bed]',
+            '-c:a', 'aac', '-b:a', '384k', '-ar', '48000',
+            out_path,
+        ]
+        print(f"  Encoding 7.1 bed.m4a from {channel_count}-ch BWF "
+              f"(dropping heights for AAC compat)...")
 
-    # Build the ffmpeg command with one -map per labeled output.
-    cmd = [
-        'ffmpeg', '-nostdin', '-y',
-        '-i', wav_path,
-        '-filter_complex', filter_complex,
-        '-map', '[bed]', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000',
-        os.path.join(output_dir, 'bed.m4a'),
-    ]
-    for i in range(object_count):
-        cmd.extend([
-            '-map', f'[o{i+1}]', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
-            os.path.join(output_dir, f'obj-{i+1:02d}.m4a'),
-        ])
-
-    print(f"  Splitting bed + {object_count} objects in a single ffmpeg pass...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # Surface failure so the Swift side can mark the job as .failed.
         tail = (result.stderr or '').splitlines()[-20:]
         raise RuntimeError(
-            f"ffmpeg single-pass split failed (exit {result.returncode}):\n"
+            f"ffmpeg bed encode failed (exit {result.returncode}):\n"
             + '\n'.join(tail)
         )
-    print(f"  Wrote bed.m4a + obj-01..{object_count:02d}.m4a")
+    print(f"  Wrote bed.m4a (no obj-NN files — ambisonic source has no objects)")
 
-    return object_count
+    return 0
 
 
 def main():
@@ -329,43 +341,17 @@ def main():
         positions = parse_adm_positions(axml, info['duration'], fps)
         print(f"  Found positions for {len(positions)} objects")
 
-    # Step 5: Generate manifest
-    colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
-              "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9",
-              "#F8C471", "#82E0AA", "#F1948A", "#AED6F1", "#D7BDE2",
-              "#A3E4D7", "#FAD7A0", "#EDBB99", "#D5F5E3", "#FADBD8"]
-
-    objects = []
-    for i in range(object_count):
-        obj = {
-            "name": positions[i]['name'] if i < len(positions) else f"Object {i+1}",
-            "file": f"obj-{i+1:02d}.m4a",
-            "volume": 0.85,
-            "color": colors[i % len(colors)],
-            "static": False,
-        }
-
-        if i < len(positions):
-            obj["x"] = positions[i]['x']
-            obj["y"] = positions[i]['y']
-            obj["z"] = positions[i]['z']
-        else:
-            # Distribute in circle
-            angle = (i / object_count) * 2 * math.pi
-            r = 3.0
-            obj["x"] = [round(r * math.sin(angle), 4)] * total_frames
-            obj["y"] = [0.0] * total_frames
-            obj["z"] = [round(-r * math.cos(angle), 4)] * total_frames
-
-        objects.append(obj)
-
+    # Step 5: Generate manifest. Bed-only — ambisonic sources have no objects.
+    # Note that object_count is now always 0 from extract_stems(); manifest
+    # publishes an empty objects array so downstream consumers (FF / Library
+    # / Composer) don't waste CPU spatialising fake objects.
     manifest = {
         "version": 1,
         "name": name,
         "duration": round(info['duration'], 3),
         "positionFPS": fps,
         "bed": {"file": "bed.m4a", "volume": 0.7},
-        "objects": objects
+        "objects": []
     }
 
     manifest_path = os.path.join(output_dir, 'manifest.json')
