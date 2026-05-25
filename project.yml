@@ -33,8 +33,8 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Fascinated By Everything"
         INFOPLIST_KEY_CFBundleDisplayName: "Spatial Field Converter"
         CODE_SIGN_ENTITLEMENTS: Sources/Resources/SpatialFieldConverter.entitlements
-        MARKETING_VERSION: "1.1.11"
-        CURRENT_PROJECT_VERSION: "13"
+        MARKETING_VERSION: "1.1.12"
+        CURRENT_PROJECT_VERSION: "14"
 
   SpatialFieldConverterTests:
     type: bundle.unit-test
