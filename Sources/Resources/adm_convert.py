@@ -279,9 +279,12 @@ def extract_stems(wav_path, output_dir, channel_count):
             )
         return 0
 
-    # 10-channel 7.1.2: split into bed + 10 mono objects in ONE ffmpeg pass.
-    # bed.m4a is a 1-second silent stereo placeholder so FF's
-    # SpatialMixManifest.bed field decodes; audio lives entirely in the objects.
+    # 10-channel 7.1.2: split into a 1-sec silent stereo bed placeholder +
+    # 10 mono positioned objects in ONE ffmpeg pass. Bed is intentionally
+    # silent — all audio lives in the 10 obj files at their canonical 7.1.2
+    # speaker positions. FF's SpatialMixManifest decoder requires a bed.file
+    # field, and the placeholder satisfies that without duplicating L+R into
+    # both bed and obj-01/obj-02.
     object_count = 10
 
     filter_parts = ['anullsrc=channel_layout=stereo:duration=1[bed]']
@@ -382,6 +385,12 @@ def main():
     colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
               "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9"]
 
+    # Static positions: write single-element arrays instead of repeating the
+    # same value `total_frames` times. FF's SessionManager seeds the channel's
+    # initial position from obj.x[0]/y[0]/z[0], then ADMPositionPlayer.update
+    # silently skips frames where frameIndex >= track.x.count — so a 1-element
+    # array means the object stays at its static position throughout playback.
+    # Drops manifest size from ~7 MB to <1 KB for a 30-min source.
     manifest_objects = []
     if object_count == 10:
         for i, pos in enumerate(SPATIAL_712_POSITIONS):
@@ -391,11 +400,13 @@ def main():
                 "volume": 0.7,
                 "color": colors[i % len(colors)],
                 "static": True,
-                "x": [pos["x"]] * total_frames,
-                "y": [pos["y"]] * total_frames,
-                "z": [pos["z"]] * total_frames,
+                "x": [pos["x"]],
+                "y": [pos["y"]],
+                "z": [pos["z"]],
             })
 
+    # bed.volume 0.0 — bed is the silent placeholder, all audio lives in
+    # the 10 positioned objects.
     manifest = {
         "version": 1,
         "name": name,
